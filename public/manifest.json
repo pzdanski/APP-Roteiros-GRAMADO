@@ -1,0 +1,22 @@
+{
+  "short_name": "Roteiro Serra",
+  "name": "Roteiro Serra Gaúcha - DUO21",
+  "description": "Seu roteiro inteligente e personalizado para Gramado, Canela e Nova Petrópolis.",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#FAF9F6",
+  "theme_color": "#1B4332",
+  "display": "standalone",
+  "orientation": "portrait"
+}

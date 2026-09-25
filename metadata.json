@@ -1,0 +1,11 @@
+{
+  "name": "Roteiro Serra Gaúcha - DUO21",
+  "description": "Planejador e assistente de viagem inteligente para Gramado, Canela e Nova Petrópolis. Sua viagem pela Serra, planejada em minutos.",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
