@@ -16,8 +16,9 @@ import {
 } from 'lucide-react';
 import { Trip, TripPreview, TripActivity, PlaceCategory, IndoorType } from '../types';
 import { NearbyAccommodationSection } from './NearbyAccommodationSection';
-import { safeNumber, safeText, formatSafeBrl } from '../utils/safeDisplay';
+import { formatSafeBrl, safeNumber, safeText } from '../utils/safeDisplay';
 import { SEED_PLACES } from '../data/seedData';
+import { PriceService } from '../services/payment/PriceService';
 
 interface PaywallPreviewProps {
   preview?: TripPreview | null;
@@ -42,7 +43,8 @@ export const PaywallPreview: React.FC<PaywallPreviewProps> = ({
   const preferences = preview?.preferences || trip?.preferences;
   const daysCount = preview?.total_days || trip?.days?.length || 4;
   const firstName = preferences?.name ? safeText(preferences.name.split(' ')[0], 'Viajante') : 'Viajante';
-  const priceBrl = preview?.price_brl || trip?.price_brl || 37;
+  const calculatedPrice = PriceService.calculatePrice(daysCount);
+  const priceBrl = preview?.price_brl || trip?.price_brl || calculatedPrice;
 
   const handleUnlock = () => {
     if (typeof onUnlockTrip === 'function') {
@@ -394,7 +396,7 @@ export const PaywallPreview: React.FC<PaywallPreviewProps> = ({
             onClick={handleUnlock}
             className="flex-1 py-3 px-4 bg-[#1B4332] hover:bg-[#2D6A4F] active:scale-[0.98] text-white font-extrabold text-sm rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 min-h-[44px]"
           >
-            <span>Desbloquear meu roteiro</span>
+            <span>Desbloquear meu roteiro — {formatSafeBrl(priceBrl)}</span>
             <ArrowRight className="w-4 h-4" />
           </button>
         </div>

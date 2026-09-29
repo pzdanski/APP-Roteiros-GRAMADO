@@ -15,17 +15,18 @@ export interface PlaceRepository {
 }
 
 export class InMemoryPlaceRepository implements PlaceRepository {
-  name = 'InMemoryPlaceRepository (Local Seed)';
+  name = 'InMemoryPlaceRepository (Mock)';
   isRealDatabase = false;
-  private places: Map<string, Place> = new Map();
+  private places = new Map<string, Place>();
 
-  constructor() {
-    // Seed initial demo data
-    SEED_PLACES.forEach(p => this.places.set(p.id, { ...p }));
+  constructor(initialSeed: Place[] = SEED_PLACES) {
+    for (const p of initialSeed) {
+      this.places.set(p.id, { ...p });
+    }
   }
 
   async getAllPlaces(): Promise<Place[]> {
-    return Array.from(this.places.values());
+    return Array.from(this.places.values()).filter(p => p.active !== false);
   }
 
   async getPlaceById(id: string): Promise<Place | null> {
@@ -33,11 +34,11 @@ export class InMemoryPlaceRepository implements PlaceRepository {
   }
 
   async getPlacesByCity(city: City): Promise<Place[]> {
-    return Array.from(this.places.values()).filter(p => p.city === city && p.active);
+    return Array.from(this.places.values()).filter(p => p.city === city && p.active !== false);
   }
 
   async getPlacesByCategory(category: PlaceCategory): Promise<Place[]> {
-    return Array.from(this.places.values()).filter(p => p.category === category && p.active);
+    return Array.from(this.places.values()).filter(p => p.category === category && p.active !== false);
   }
 
   async savePlace(placeData: Partial<Place>): Promise<Place> {
@@ -105,132 +106,83 @@ export class InMemoryPlaceRepository implements PlaceRepository {
   }
 }
 
+import { getApiUrl } from '../utils/apiClient';
+
 export class SupabasePlaceRepository implements PlaceRepository {
   name = 'SupabasePlaceRepository';
   isRealDatabase = true;
-  private fallback = new InMemoryPlaceRepository();
 
   async getAllPlaces(): Promise<Place[]> {
-    // 1. Try server backend proxy (which handles Supabase service role / RLS safely)
-    try {
-      const res = await fetch('/api/db/places');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data) && data.length > 0) {
-          return data;
-        }
-      }
-    } catch {
-      // ignore
+    // Query backend proxy
+    const res = await fetch(getApiUrl('/api/db/places'));
+    if (!res.ok) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao carregar locais do Supabase (HTTP ${res.status})`);
     }
-
-    // 2. Try direct client if Supabase is configured in browser
-    const client = getSupabaseClient();
-    if (client) {
-      try {
-        const { data, error } = await client
-          .from('places')
-          .select('*')
-          .eq('active', true);
-        if (!error && data && data.length > 0) {
-          return data.map(this.mapRowToPlace);
-        }
-      } catch (err) {
-        console.warn('Supabase client places fetch failed:', err);
-      }
+    const data = await res.json();
+    if (!Array.isArray(data)) {
+      throw new Error('DATABASE_UNAVAILABLE: Resposta inválida da consulta de locais no Supabase');
     }
-
-    // 3. Fallback safely to verified memory seed
-    return this.fallback.getAllPlaces();
+    return data.map(this.mapRowToPlace);
   }
 
   async getPlaceById(id: string): Promise<Place | null> {
-    try {
-      const res = await fetch(`/api/db/places/${id}`);
-      if (res.ok) {
-        return await res.json();
-      }
-    } catch {
-      // ignore
+    const res = await fetch(getApiUrl(`/api/db/places/${encodeURIComponent(id)}`));
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao obter local ${id} do Supabase (HTTP ${res.status})`);
     }
-
-    const client = getSupabaseClient();
-    if (client) {
-      try {
-        const { data } = await client
-          .from('places')
-          .select('*')
-          .eq('id', id)
-          .single();
-        if (data) return this.mapRowToPlace(data);
-      } catch {
-        // ignore
-      }
-    }
-
-    return this.fallback.getPlaceById(id);
+    const data = await res.json();
+    return this.mapRowToPlace(data);
   }
 
   async getPlacesByCity(city: City): Promise<Place[]> {
     const all = await this.getAllPlaces();
-    return all.filter(p => p.city === city && p.active);
+    return all.filter(p => p.city === city && p.active !== false);
   }
 
   async getPlacesByCategory(category: PlaceCategory): Promise<Place[]> {
     const all = await this.getAllPlaces();
-    return all.filter(p => p.category === category && p.active);
+    return all.filter(p => p.category === category && p.active !== false);
   }
 
   async savePlace(placeData: Partial<Place>): Promise<Place> {
-    try {
-      const res = await fetch('/api/db/places', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(placeData)
-      });
-      if (res.ok) {
-        return await res.json();
-      }
-    } catch {
-      // ignore
+    const res = await fetch(getApiUrl('/api/db/places'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(placeData)
+    });
+    if (!res.ok) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao salvar local no Supabase (HTTP ${res.status})`);
     }
-
-    return this.fallback.savePlace(placeData);
+    const data = await res.json();
+    return this.mapRowToPlace(data);
   }
 
   async updatePlace(id: string, updates: Partial<Place>): Promise<Place> {
-    try {
-      const res = await fetch(`/api/db/places/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates)
-      });
-      if (res.ok) {
-        return await res.json();
-      }
-    } catch {
-      // ignore
+    const res = await fetch(getApiUrl(`/api/db/places/${encodeURIComponent(id)}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+    if (!res.ok) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao atualizar local ${id} no Supabase (HTTP ${res.status})`);
     }
-
-    return this.fallback.updatePlace(id, updates);
+    const data = await res.json();
+    return this.mapRowToPlace(data);
   }
 
   async deactivatePlace(id: string): Promise<boolean> {
-    try {
-      const res = await fetch(`/api/db/places/${id}`, {
-        method: 'DELETE'
-      });
-      if (res.ok) {
-        return true;
-      }
-    } catch {
-      // ignore
+    const res = await fetch(getApiUrl(`/api/db/places/${encodeURIComponent(id)}`), {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao desativar local ${id} no Supabase`);
     }
-
-    return this.fallback.deactivatePlace(id);
+    return true;
   }
 
   private mapRowToPlace(row: any): Place {
+    if (!row) return row;
     return {
       id: row.id,
       name: row.name,
@@ -268,6 +220,3 @@ export class SupabasePlaceRepository implements PlaceRepository {
     };
   }
 }
-
-// Active singleton instance using SupabasePlaceRepository (with graceful fallback)
-export const placeRepository: PlaceRepository = new SupabasePlaceRepository();

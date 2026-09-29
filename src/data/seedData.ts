@@ -286,6 +286,66 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
+    id: 'plc-gra-colosseo-fondue',
+    name: 'Restaurante Colosseo Fondue',
+    slug: 'restaurante-colosseo-fondue',
+    city: 'Gramado',
+    category: 'restaurante',
+    description: 'Tradição em sequência de fondue na pedra no centro de Gramado com piano ao vivo e ambiente acolhedor.',
+    latitude: -29.3785,
+    longitude: -50.8732,
+    address: 'Av. das Hortênsias, 1560 - Centro, Gramado - RS',
+    phone: '(54) 3286-1927',
+    whatsapp: '',
+    website: 'https://colosseo.com.br',
+    instagram: '@colosseogramado',
+    rating: 4.8,
+    rating_count: 4200,
+    price_level: 3,
+    price_info: {
+      adult_price: 110,
+      is_free: false,
+      currency: 'BRL',
+      source_name: 'Sequência Tradicional por Pessoa',
+      checked_at: '2026-03-01',
+      confidence: 'high'
+    },
+    average_duration_minutes: 105,
+    reservation_required: false,
+    accessible: true,
+    pet_friendly: false,
+    children_friendly: true,
+    indoor_type: 'indoor',
+    opening_hours: {
+      'seg': '18:30 - 23:30',
+      'ter': '18:30 - 23:30',
+      'qua': '18:30 - 23:30',
+      'qui': '18:30 - 23:30',
+      'sex': '18:30 - 23:30',
+      'sab': '18:30 - 23:30',
+      'dom': '18:30 - 23:30'
+    },
+    tags: ['fondue', 'gastronomia', 'jantar', 'casal', 'familia'],
+    suitable_for: ['casal', 'familia', 'criancas'],
+    media: [
+      {
+        url: 'https://images.unsplash.com/photo-1544025162-d76694265947?auto=format&fit=crop&w=1000&q=80',
+        caption: 'Sequência tradicional de fondue com queijo, carnes na pedra e chocolate',
+        is_hero: true
+      }
+    ],
+    is_divulga_lugares_partner: true,
+    divulga_lugares_tip: {
+      title: 'Sequência Completa de Fondue',
+      text: 'Três etapas clássicas: queijo suíço com acompanhamentos, carnes nobres na pedra vulcânica e fondue de chocolate com frutas da estação.',
+      curator_badge: '⭐ Fondue Recomendado DUO21'
+    },
+    active: true,
+    is_demo: false,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-03-01T00:00:00Z'
+  },
+  {
     id: 'plc-gra-06',
     name: 'Olivas de Gramado',
     slug: 'olivas-de-gramado',

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, 
   QrCode, 
@@ -10,10 +10,12 @@ import {
   Clock, 
   AlertCircle,
   Mail,
-  User
+  User,
+  Loader2
 } from 'lucide-react';
 import { Trip, TripPreview, PaymentMethod } from '../types';
 import { paymentProvider } from '../services/payment/PaymentProvider';
+import { PriceService } from '../services/payment/PriceService';
 import { trackEvent } from '../services/analytics';
 
 interface CheckoutModalProps {
@@ -30,18 +32,50 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   onPaymentSuccess
 }) => {
   const preferences = preview?.preferences || trip?.preferences;
-  const priceBrl = preview?.price_brl || trip?.price_brl || 37;
+  const daysCount = preview?.total_days || trip?.days?.length || 4;
+  const calculatedPrice = PriceService.calculatePrice(daysCount);
+  const priceBrl = preview?.price_brl || trip?.price_brl || calculatedPrice;
   const tripId = trip?.id || preview?.id || `trip_${Date.now()}`;
   const secureToken = trip?.secure_token || `tok_${Math.random().toString(36).substring(2, 9)}`;
 
   const [method, setMethod] = useState<PaymentMethod>('pix');
   const [customerName, setCustomerName] = useState(preferences?.name || '');
   const [customerEmail, setCustomerEmail] = useState(preferences?.email || '');
+  const [customerCpf, setCustomerCpf] = useState('');
   const [copiedPix, setCopiedPix] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [orderCreated, setOrderCreated] = useState(false);
+  const [currentOrderId, setCurrentOrderId] = useState<string | null>(null);
   const [pixCopyCode, setPixCopyCode] = useState('');
   const [pixQrCodeUrl, setPixQrCodeUrl] = useState('');
+  const [isPaid, setIsPaid] = useState(false);
+
+  const pollIntervalRef = useRef<any>(null);
+
+  // Polling for payment confirmation
+  useEffect(() => {
+    if (!orderCreated || !currentOrderId || isPaid) return;
+
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const order = await paymentProvider.checkOrderStatus(currentOrderId);
+        if (order.status === 'PAID' || order.status === 'paid') {
+          setIsPaid(true);
+          clearInterval(pollIntervalRef.current);
+          trackEvent('payment_completed', { tripId, orderId: currentOrderId });
+          setTimeout(() => {
+            onPaymentSuccess(secureToken, customerEmail);
+          }, 600);
+        }
+      } catch {
+        // Continue polling
+      }
+    }, 3000);
+
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, [orderCreated, currentOrderId, isPaid, tripId, secureToken, customerEmail, onPaymentSuccess]);
 
   const handleStartCheckout = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,13 +86,19 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
     try {
       const order = await paymentProvider.createOrder({
-        tripId: tripId,
+        tripId,
         amountBrl: priceBrl,
         paymentMethod: method,
         customerName,
-        customerEmail
+        customerEmail,
+        customerCpf: customerCpf || undefined,
+        startDate: preferences?.start_date,
+        endDate: preferences?.end_date,
+        numberOfDays: daysCount,
+        preferences
       });
 
+      setCurrentOrderId(order.id);
       if (order.pix_copy_paste) {
         setPixCopyCode(order.pix_copy_paste);
       }
@@ -73,13 +113,23 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     }
   };
 
-  const handleSimulateInstantApproval = () => {
+  const handleSimulateInstantApproval = async () => {
     setIsProcessing(true);
-    trackEvent('payment_completed', { tripId: tripId });
+    trackEvent('payment_simulated_sandbox', { tripId });
 
-    setTimeout(() => {
+    try {
+      if (currentOrderId) {
+        await paymentProvider.simulateWebhookApproval(currentOrderId);
+      }
+      setIsPaid(true);
+      setTimeout(() => {
+        onPaymentSuccess(secureToken, customerEmail);
+      }, 500);
+    } catch {
       onPaymentSuccess(secureToken, customerEmail);
-    }, 800);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleCopyPix = () => {
@@ -122,7 +172,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
           <div className="bg-[#FAF9F6] p-3.5 rounded-2xl border border-[#E7DFCE] flex items-center justify-between">
             <div>
               <span className="text-xs font-bold text-[#1E293B] block">
-                Roteiro {trip.days.length} Dias (Serra Gaúcha)
+                Roteiro {daysCount} Dias (Serra Gaúcha)
               </span>
               <span className="text-[11px] text-[#64748B]">
                 Gramado, Canela e Nova Petrópolis
@@ -131,7 +181,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
             <div className="text-right">
               <span className="text-lg font-black text-[#1B4332]">
-                R$ {trip.price_brl.toFixed(2).replace('.', ',')}
+                R$ {priceBrl.toFixed(2).replace('.', ',')}
               </span>
               <span className="text-[10px] text-[#7A6F5D] block">Pagamento único</span>
             </div>

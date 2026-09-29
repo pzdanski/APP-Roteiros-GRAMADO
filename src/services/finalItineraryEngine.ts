@@ -10,8 +10,9 @@ import {
 } from '../types';
 import { calculateTripPrice, SEED_EVENTS } from '../data/seedData';
 import { buildItinerary, DEFAULT_WEIGHTS, EngineWeights } from './itineraryEngine';
-import { placeRepository } from './repositories/PlaceRepository';
+import { placeRepository } from './repositories/RepositoryFactory';
 import { placeQueryService } from './places/PlaceQueryService';
+import { logisticsEngine } from './logistics/LogisticsEngine';
 
 export class FinalItineraryEngine {
   /**
@@ -28,7 +29,10 @@ export class FinalItineraryEngine {
     weights: EngineWeights = DEFAULT_WEIGHTS
   ): Promise<Trip> {
     const places = await placeRepository.getAllPlaces();
-    return this.generateFinalItinerary(preferences, unlockSource, weights, places);
+    const planned = await logisticsEngine.planItinerary(preferences, places);
+    planned.unlock_source = unlockSource;
+    planned.unlockSource = unlockSource;
+    return planned;
   }
 
   generateFinalItinerary(
@@ -53,11 +57,22 @@ export class FinalItineraryEngine {
       const dayDate = new Date(day.date);
       const dayOfWeekShort = this.getDayOfWeekKey(dayDate);
 
-      const enhancedActivities: TripActivity[] = day.activities.map((act) => {
+      const enhancedActivities: TripActivity[] = day.activities.map((act, index) => {
         const unlockedAct: TripActivity = {
           ...act,
           locked: false
         };
+
+        // Section 14: Use logistics anchor with Haversine calculation
+        if (preferences.logistics_anchor && index === 0) {
+          const anchorDist = placeQueryService ? 
+            Number((Math.sqrt(
+              Math.pow(act.place.latitude - preferences.logistics_anchor.latitude, 2) +
+              Math.pow(act.place.longitude - preferences.logistics_anchor.longitude, 2)
+            ) * 111).toFixed(1)) : 2.5;
+          unlockedAct.distance_km_from_prev = anchorDist;
+          unlockedAct.travel_time_from_prev_minutes = Math.max(5, Math.round(anchorDist * 2.5));
+        }
 
         // Validate opening hours for day of week
         const opening = act.place.opening_hours?.[dayOfWeekShort] || 'Aberto';
@@ -83,6 +98,9 @@ export class FinalItineraryEngine {
     });
 
     const isDemo = unlockSource === 'dev_test';
+    const totalDailySpend = enhancedDays.reduce((acc, d) => acc + (d.total_day_cost_estimated || 0), 0);
+    const estimatedMin = Math.round(totalDailySpend * 0.85);
+    const estimatedMax = Math.round(totalDailySpend * 1.25);
 
     const finalTrip: Trip = {
       ...rawTrip,
@@ -92,7 +110,9 @@ export class FinalItineraryEngine {
       unlock_source: unlockSource,
       unlockSource: unlockSource,
       is_demo: isDemo,
-      price_brl: calculateTripPrice(enhancedDays.length)
+      price_brl: calculateTripPrice(enhancedDays.length),
+      estimated_trip_cost_min: estimatedMin,
+      estimated_trip_cost_max: estimatedMax
     };
 
     return finalTrip;

@@ -18,6 +18,7 @@ export type AnalyticsEvent =
   | 'report_submitted'
   | 'guide_message'
   | 'nearby_used'
+  | 'payment_simulated_sandbox'
   | 'dev_unlock';
 
 export function trackEvent(eventName: AnalyticsEvent, properties?: Record<string, unknown>): void {

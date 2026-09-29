@@ -7,16 +7,26 @@ import { routeProvider } from '../routes/RouteProvider';
 import { mediaProvider } from '../media/MediaProvider';
 import { offerProvider } from '../offers/OfferProvider';
 import { eventProvider } from '../events/EventProvider';
-import { tripRepository } from '../repositories/TripRepository';
-import { placeRepository } from '../repositories/PlaceRepository';
 import { googlePlacesProvider } from '../places/GooglePlacesProvider';
+import {
+  placeRepository,
+  tripRepository,
+  eventRepository,
+  priceRepository,
+  hoursRepository,
+  paymentRepository,
+  apiUsageRepository,
+  cacheRepository
+} from '../repositories/RepositoryFactory';
+
+export type StandardProviderStatus = 'CONNECTED' | 'CONFIGURATION_REQUIRED' | 'MOCK' | 'ERROR' | 'DISABLED';
 
 export interface RegisteredProviderStatus {
   id: string;
   name: string;
   category: string;
   activeProvider: string;
-  status: 'connected' | 'mock' | 'awaiting_key' | 'error';
+  status: StandardProviderStatus;
   environment: 'sandbox' | 'production' | 'development';
   estimatedLatencyMs: number;
   lastTestedAt?: string;
@@ -28,152 +38,90 @@ export interface ProviderRegistry {
   getProviderStatus(providerId: string): ProviderStatus;
   getStatuses(): RegisteredProviderStatus[];
   testProvider(providerId: string): Promise<RegisteredProviderStatus | null>;
+  refreshAllStatuses(): Promise<RegisteredProviderStatus[]>;
 }
 
 export class AppProviderRegistry implements ProviderRegistry {
-  private providers: ProviderInfo[] = [
-    {
-      id: 'supabase',
-      name: 'Supabase (Banco de Dados & Auth)',
-      category: 'database',
-      providerName: 'Supabase Postgres (Source of Truth)',
-      status: 'CONNECTED',
-      environment: 'development',
-      details: 'Conectado como fonte de verdade com tabelas relacionais, migrations e RLS.',
-      canTestConnection: true
-    },
-    {
-      id: 'gemini',
-      name: 'Google Gemini (Inteligência & Guia)',
-      category: 'ai',
-      providerName: 'Gemini 2.5 Flash',
-      status: 'CONFIGURATION_REQUIRED',
-      environment: 'development',
-      details: 'Serviço ativo no backend para parsing inteligente e respostas contextuais.',
-      canTestConnection: true
-    },
-    {
-      id: 'google_places',
-      name: 'Google Places API',
-      category: 'places',
-      providerName: 'Google Places Platform',
-      status: 'CONFIGURATION_REQUIRED',
-      environment: 'mock',
-      details: 'Provider estruturado aguardando chave GOOGLE_MAPS_API_KEY no .env.',
-      canTestConnection: true
-    },
-    {
-      id: 'mapas',
-      name: 'Mapas & Visualização',
-      category: 'maps',
-      providerName: 'MapLibre GL / OpenStreetMap (Demo)',
-      status: 'MOCK',
-      environment: 'development',
-      details: 'Abstração MapProvider ativa para visualização de pontos na Serra.',
-      canTestConnection: true
-    },
-    {
-      id: 'rotas',
-      name: 'Cálculo de Deslocamento',
-      category: 'routes',
-      providerName: 'Haversine / OSRM',
-      status: 'MOCK',
-      environment: 'development',
-      details: 'Cálculo de proximidade geográfica por coordenadas locais.',
-      canTestConnection: true
-    },
-    {
-      id: 'clima',
-      name: 'Previsão do Tempo',
-      category: 'weather',
-      providerName: 'Open-Meteo / Local Weather',
-      status: 'MOCK',
-      environment: 'development',
-      details: 'Simulação climática e proteção para dias de chuva na Serra.',
-      canTestConnection: true
-    },
-    {
-      id: 'asaas',
-      name: 'Asaas (Gateway de Pagamento)',
-      category: 'payment',
-      providerName: 'Asaas Sandbox',
-      status: 'MOCK',
-      environment: 'sandbox',
-      details: 'Simulação instantânea de PIX e webhook de pagamento ativo.',
-      canTestConnection: true
-    }
-  ];
-
   private statusItems: RegisteredProviderStatus[] = [
     {
       id: 'supabase',
       name: 'Supabase Database',
       category: 'database',
-      activeProvider: 'Supabase Postgres / Local Engine',
-      status: 'connected',
+      activeProvider: 'Supabase Postgres (Source of Truth)',
+      status: 'MOCK', // Dynamically verified on refresh/ping
       environment: 'development',
-      estimatedLatencyMs: 12,
-      lastResponseSummary: 'Conectado. Migrations ativas e tabelas catalogadas.'
+      estimatedLatencyMs: 0,
+      lastResponseSummary: 'Aguardando verificação de conexão real.'
     },
     {
       id: 'gemini',
       name: 'Google Gemini',
       category: 'ai',
-      activeProvider: 'Gemini 2.5 Flash / Backend Proxy',
-      status: 'connected',
+      activeProvider: 'Gemini 2.5 Flash',
+      status: 'CONFIGURATION_REQUIRED',
       environment: 'development',
-      estimatedLatencyMs: 190,
-      lastResponseSummary: 'Endpoint /api/trip/parse e /api/trip/guide operacionais.'
+      estimatedLatencyMs: 0,
+      lastResponseSummary: 'Verificando chave de API GEMINI_API_KEY no servidor.'
     },
     {
       id: 'google_places',
-      name: 'Google Places API',
+      name: 'Google Places Platform',
       category: 'places',
-      activeProvider: 'GooglePlacesProvider',
-      status: 'awaiting_key',
-      environment: 'sandbox',
+      activeProvider: 'GooglePlacesProvider (Cache-First)',
+      status: 'CONFIGURATION_REQUIRED',
+      environment: 'development',
       estimatedLatencyMs: 0,
-      lastResponseSummary: 'Aguardando GOOGLE_MAPS_API_KEY no .env (não bloqueante).'
+      lastResponseSummary: 'Aguardando GOOGLE_MAPS_API_KEY no .env (Sprint 2.2).'
     },
     {
       id: 'routes',
       name: 'Rotas & Deslocamento',
       category: 'routes',
       activeProvider: 'Haversine Local / OSRM',
-      status: 'mock',
-      environment: 'sandbox',
-      estimatedLatencyMs: 5,
-      lastResponseSummary: 'Pré-filtragem por coordenadas geográfica ativa.'
+      status: 'MOCK',
+      environment: 'development',
+      estimatedLatencyMs: 2,
+      lastResponseSummary: 'Cálculo de proximidade geográfica por coordenadas locais.'
     },
     {
       id: 'weather',
       name: 'Previsão do Tempo',
       category: 'weather',
-      activeProvider: 'Open-Meteo / Microclima Serra',
-      status: 'mock',
-      environment: 'sandbox',
-      estimatedLatencyMs: 40,
-      lastResponseSummary: 'Regras de clima e atividades indoor calibradas.'
+      activeProvider: 'Open-Meteo / Local Weather',
+      status: 'MOCK',
+      environment: 'development',
+      estimatedLatencyMs: 15,
+      lastResponseSummary: 'Simulação climática e proteção para dias de chuva na Serra.'
     },
     {
       id: 'asaas',
       name: 'Asaas Pagamentos',
-      category: 'payments',
-      activeProvider: 'AsaasPaymentProvider (Sandbox)',
-      status: 'mock',
+      category: 'payment',
+      activeProvider: 'Asaas Payment Gateway (Sandbox)',
+      status: 'MOCK',
       environment: 'sandbox',
-      estimatedLatencyMs: 85,
-      lastResponseSummary: 'Sandbox ativo com simulação de PIX instantâneo.'
+      estimatedLatencyMs: 50,
+      lastResponseSummary: 'Sandbox ativo com simulação instantânea de PIX.'
     }
   ];
 
   getAllProviders(): ProviderInfo[] {
-    return this.providers;
+    return this.statusItems.map(s => ({
+      id: s.id,
+      name: s.name,
+      category: s.category as any,
+      providerName: s.activeProvider,
+      status: s.status as any,
+      environment: s.environment,
+      details: s.lastResponseSummary || '',
+      canTestConnection: true
+    }));
   }
 
   getProviderStatus(providerId: string): ProviderStatus {
-    const p = this.providers.find(prov => prov.id === providerId);
-    return p ? p.status : 'DISABLED';
+    const item = this.statusItems.find(s => s.id === providerId);
+    if (!item) return 'DISABLED';
+    return item.status as ProviderStatus;
   }
 
   getStatuses(): RegisteredProviderStatus[] {
@@ -189,49 +137,145 @@ export class AppProviderRegistry implements ProviderRegistry {
     if (providerId === 'supabase') {
       try {
         const res = await fetch('/api/db/health');
+        item.estimatedLatencyMs = Math.max(1, Date.now() - start);
+        item.lastTestedAt = new Date().toISOString();
+
         if (res.ok) {
           const data = await res.json();
-          item.estimatedLatencyMs = Math.max(1, Date.now() - start);
-          item.status = 'connected';
-          item.lastResponseSummary = `${data.provider}: ${data.details}`;
-          item.lastTestedAt = new Date().toISOString();
-          return item;
+          if (data.status === 'connected') {
+            item.status = 'CONNECTED';
+            item.lastResponseSummary = `Conectado ao Postgres. ${data.details || ''}`;
+          } else if (data.status === 'mock') {
+            item.status = 'MOCK';
+            item.lastResponseSummary = `Modo MOCK ativo: ${data.details || ''}`;
+          } else {
+            item.status = 'ERROR';
+            item.lastResponseSummary = data.details || 'Falha de conexão com o banco';
+          }
+        } else {
+          item.status = 'ERROR';
+          item.lastResponseSummary = `Erro HTTP ${res.status}: DATABASE_UNAVAILABLE`;
         }
-      } catch {
-        // ignore
+      } catch (err: any) {
+        item.status = 'ERROR';
+        item.estimatedLatencyMs = Date.now() - start;
+        item.lastResponseSummary = 'Servidor de banco de dados inacessível';
       }
-    } else if (providerId === 'google_places') {
-      const isConfigured = googlePlacesProvider.isAvailable();
-      item.status = isConfigured ? 'connected' : 'awaiting_key';
-      item.estimatedLatencyMs = 0;
-      item.lastResponseSummary = isConfigured
-        ? 'Chave configurada e pronta para consultas.'
-        : 'Status: CONFIGURATION_REQUIRED. Aguardando GOOGLE_MAPS_API_KEY.';
-      item.lastTestedAt = new Date().toISOString();
       return item;
-    } else if (providerId === 'gemini') {
-      try {
-        const res = await fetch('/api/health');
-        if (res.ok) {
-          const data = await res.json();
-          item.estimatedLatencyMs = Math.max(10, Date.now() - start);
-          item.status = data.gemini_configured ? 'connected' : 'mock';
-          item.lastResponseSummary = data.gemini_configured
-            ? 'API Gemini conectada e ativa no backend.'
-            : 'Gemini sem chave configurada (utilizando heurística local segura).';
-          item.lastTestedAt = new Date().toISOString();
-          return item;
-        }
-      } catch {
-        // ignore
-      }
     }
 
-    // Default mock ping test
-    await new Promise(r => setTimeout(r, 120));
-    item.estimatedLatencyMs = Math.max(5, Date.now() - start);
+    if (providerId === 'gemini') {
+      try {
+        const res = await fetch('/api/health');
+        item.estimatedLatencyMs = Math.max(1, Date.now() - start);
+        item.lastTestedAt = new Date().toISOString();
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ai === 'connected' || data.gemini_configured) {
+            item.status = 'CONNECTED';
+            item.lastResponseSummary = 'API Gemini operacional e autenticada no backend.';
+          } else {
+            item.status = 'CONFIGURATION_REQUIRED';
+            item.lastResponseSummary = 'Chave GEMINI_API_KEY ausente ou não configurada.';
+          }
+        }
+      } catch {
+        item.status = 'ERROR';
+        item.lastResponseSummary = 'Falha ao consultar endpoint de inteligência artificial.';
+      }
+      return item;
+    }
+
+    if (providerId === 'google_places') {
+      try {
+        const placesStatus = await googlePlacesProvider.getStatus();
+        item.status = placesStatus.status;
+        item.estimatedLatencyMs = Math.max(1, Date.now() - start);
+        item.lastTestedAt = new Date().toISOString();
+        item.lastResponseSummary = placesStatus.details;
+      } catch (err: any) {
+        item.status = 'ERROR';
+        item.lastResponseSummary = 'Falha ao consultar status de Google Places no servidor';
+      }
+      return item;
+    }
+
+    if (providerId === 'routes') {
+      try {
+        const res = await fetch('/api/routes/health');
+        item.estimatedLatencyMs = Math.max(1, Date.now() - start);
+        item.lastTestedAt = new Date().toISOString();
+        if (res.ok) {
+          const data = await res.json();
+          item.status = data.status === 'CONNECTED' ? 'CONNECTED' : (data.status === 'CONFIGURATION_REQUIRED' ? 'MOCK' : data.status);
+          item.lastResponseSummary = data.details;
+          item.activeProvider = data.status === 'CONNECTED' ? 'Google Routes API (New)' : 'Haversine Montanha / OSRM';
+        } else {
+          item.status = 'ERROR';
+          item.lastResponseSummary = `Erro HTTP ${res.status} ao consultar Routes`;
+        }
+      } catch (err: any) {
+        item.status = 'ERROR';
+        item.lastResponseSummary = 'Falha ao consultar endpoint de rotas';
+      }
+      return item;
+    }
+
+    if (providerId === 'weather') {
+      try {
+        const res = await fetch('/api/weather/health');
+        item.estimatedLatencyMs = Math.max(1, Date.now() - start);
+        item.lastTestedAt = new Date().toISOString();
+        if (res.ok) {
+          const data = await res.json();
+          item.status = data.status === 'CONNECTED' ? 'CONNECTED' : 'MOCK';
+          item.lastResponseSummary = data.details;
+          item.activeProvider = 'Open-Meteo & Microclima Serra';
+        } else {
+          item.status = 'ERROR';
+          item.lastResponseSummary = `Erro HTTP ${res.status} ao consultar Weather`;
+        }
+      } catch (err: any) {
+        item.status = 'ERROR';
+        item.lastResponseSummary = 'Falha ao consultar endpoint de clima';
+      }
+      return item;
+    }
+
+    if (providerId === 'asaas') {
+      try {
+        const res = await fetch('/api/payments/webhook');
+        item.estimatedLatencyMs = Math.max(1, Date.now() - start);
+        item.lastTestedAt = new Date().toISOString();
+        if (res.ok) {
+          const data = await res.json();
+          item.status = 'CONNECTED';
+          item.environment = data.environment || 'sandbox';
+          item.lastResponseSummary = `Webhook ${data.status.toUpperCase()} em ${data.endpoint} (Env: ${data.environment || 'sandbox'})`;
+          item.activeProvider = `Asaas Sandbox Gateway`;
+        } else {
+          item.status = 'ERROR';
+          item.lastResponseSummary = `Erro HTTP ${res.status} ao consultar Webhook`;
+        }
+      } catch (err: any) {
+        item.status = 'ERROR';
+        item.lastResponseSummary = 'Falha ao consultar status de pagamentos';
+      }
+      return item;
+    }
+
+    item.estimatedLatencyMs = Math.max(1, Date.now() - start);
     item.lastTestedAt = new Date().toISOString();
+    item.status = 'MOCK';
     return item;
+  }
+
+  async refreshAllStatuses(): Promise<RegisteredProviderStatus[]> {
+    for (const item of this.statusItems) {
+      await this.testProvider(item.id);
+    }
+    return this.statusItems;
   }
 }
 
@@ -246,7 +290,13 @@ export {
   mediaProvider,
   offerProvider,
   eventProvider,
-  tripRepository,
+  googlePlacesProvider,
   placeRepository,
-  googlePlacesProvider
+  tripRepository,
+  eventRepository,
+  priceRepository,
+  hoursRepository,
+  paymentRepository,
+  apiUsageRepository,
+  cacheRepository
 };

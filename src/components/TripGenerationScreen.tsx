@@ -11,10 +11,11 @@ import {
   ArrowLeft,
   Building2
 } from 'lucide-react';
-import { TripPreferences, Trip, TripPreview } from '../types';
+import { TripPreferences, Trip, TripPreview, City } from '../types';
 import { previewEngine } from '../services/previewEngine';
 import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
 import { isValidCount, safeText } from '../utils/safeDisplay';
+import { placeResolutionService } from '../services/places/PlaceResolutionService';
 
 interface TripGenerationScreenProps {
   preferences: TripPreferences;
@@ -89,6 +90,34 @@ export const TripGenerationScreen: React.FC<TripGenerationScreenProps> = ({
 
   useEffect(() => {
     let isCancelled = false;
+
+    // Asynchronously resolve accommodation to establish official coordinates anchor
+    if (hasConfirmedHotel && preferences.hotel_name && !preferences.logistics_anchor) {
+      placeResolutionService.resolveAccommodation(preferences.hotel_name, preferences.hotel_city || 'Gramado')
+        .then(result => {
+          if (isCancelled) return;
+          if (result.place) {
+            preferences.accommodation_place_id = result.place.externalId;
+            preferences.hotel_address = result.place.address || preferences.hotel_address;
+            preferences.logistics_anchor = {
+              latitude: result.place.latitude,
+              longitude: result.place.longitude,
+              label: result.place.name,
+              city: (result.place.city as City) || hotelCity
+            };
+          } else if (result.provisionalCoordinates) {
+            preferences.logistics_anchor = {
+              latitude: result.provisionalCoordinates.latitude,
+              longitude: result.provisionalCoordinates.longitude,
+              label: `Centro de ${result.provisionalCoordinates.city}`,
+              city: result.provisionalCoordinates.city
+            };
+          }
+        })
+        .catch(err => {
+          console.warn('[TripGenerationScreen] Non-blocking accommodation resolution:', err);
+        });
+    }
 
     const timer = setInterval(() => {
       setCurrentStepIndex((prev) => {

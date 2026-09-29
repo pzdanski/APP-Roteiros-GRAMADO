@@ -18,18 +18,23 @@ Diferencia-se fundamentalmente de geradores genéricos de IA:
       ├── Lucide Icons + Motion
       └── Local & Offline Resilience
             │
-            ▼ (HTTP / JSON / Server-Side APIs)
 [ Backend Node.js / Express ]
       │
+      ├── POST /api/places/* (Google Places API New / Cache-First)
+      ├── POST /api/routes/* (Google Routes API New / Haversine Mountain)
+      ├── GET  /api/weather/* (Open-Meteo & Microclima Serra)
       ├── POST /api/trip/parse (Gemini 2.5 Flash / Heuristic fallback)
       ├── POST /api/trip/guide (Contextual Assistant)
       ├── POST /api/payment/checkout (Asaas Gateway / Sandbox)
-      ├── POST /api/payment/webhook (Idempotent Webhook)
-      └── POST /api/reports (Turistas / Curadoria)
+      ├── GET  /api/db/* (Supabase Postgres Source of Truth / Cache)
+      └── GET  /api/admin/* (Métricas, Auditoria, Telemetria)
             │
-            ├── AIProvider Abstraction (GeminiProvider, OpenAIProvider)
-            ├── Itinerary Engine (Deterministic rule-based pipeline)
-            └── Supabase Client (PostgreSQL + RLS)
+            ├── LogisticsEngine (Clusterização, Anti Zigue-Zague, Horários, Refeições)
+            ├── ItineraryValidator (Auditoria determinística pós-geração)
+            ├── WeatherReplanService (Adaptação climática sem consumo de cota)
+            ├── PlaceResolutionService & PlaceDiscoveryService
+            ├── CostGuard & api_usage (Teto R$ 1,00 / viagem)
+            └── Supabase Repositories (Places, Hours, Prices, Trips, Usage, Cache)
 ```
 
 ## 3. Fluxo Completo de Negócio

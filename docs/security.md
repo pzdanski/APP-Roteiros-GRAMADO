@@ -1,20 +1,39 @@
-# Segurança e LGPD - DUO21 Serra Gaúcha
+# Política e Diretrizes de Segurança — DUO21
 
-## 1. Princípios de Segurança
+## 1. Segredos e Chaves de Serviço
 
-1. **Secrets Somente no Servidor**:
-   - `GEMINI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY` e `ASAAS_API_KEY` jamais são expostas ao browser ou incluídas no bundle cliente.
-   - Chamadas que consomem provedores de IA ou gateway de pagamentos ocorrem exclusivamente através de endpoints `/api/*`.
+- `SUPABASE_SERVICE_ROLE_KEY`:
+  - **ESTRITAMENTE NO SERVIDOR.**
+  - Nunca exposta no frontend, variáveis `VITE_`, bundle client ou repositório Git.
+  - Auditada com `grep` e `git grep` em cada build.
+- `ADMIN_API_KEY`:
+  - Utilizada pelo middleware `requireAdmin` no servidor Express.
+  - Exigida em rotas administrativas `/api/admin/*`, mutações no catálogo (`POST/PUT/DELETE /api/db/*`).
 
-2. **Acesso por Token Seguro**:
-   - Não há exigência de senha no MVP para reduzir atrito mobile.
-   - O acesso é autenticado via link seguro (`/v/{secure_token}`). O token possui entropia criptográfica elevada (não sequencial).
-   - O usuário pode recuperar seu link a qualquer momento informando o e-mail cadastrado na compra.
+## 2. Acesso a Viagens e `secure_trip_token`
 
-3. **Webhook Idempotente**:
-   - O endpoint `/api/payment/webhook` registra o identificador único do evento para evitar duplo processamento de pagamentos ou desbloqueios duplicados.
+- O acesso público do turista a uma viagem **nunca** depende de sequenciais ou apenas do UUID `id`.
+- Utiliza `secure_token`:
+  - Formato `v_<hex_random_24_bytes>` gerado criptograficamente por `TripAccessService.generateSecureToken()`.
+  - Comparação segura contra ataques de timing (`crypto.timingSafeEqual`).
+- **Isolamento entre viagens (Cross-Trip Access):**
+  - Token A dá acesso exclusivamente à Viagem A.
+  - Tentativa de consulta da Viagem B utilizando Token A retorna `TRIP_NOT_FOUND` ou `FORBIDDEN`.
 
-4. **LGPD (Lei Geral de Proteção de Dados)**:
-   - Coleta mínima de dados (nome, e-mail, datas, composição de grupo e preferências).
-   - Localização GPS é estritamente opcional e acionada apenas mediante consentimento explícito no botão "Ver o que fazer perto daqui".
-   - Após a viagem, os dados do assistente interativo são arquivados para consulta histórica.
+## 3. Bloqueio Estrito de `DEV_TEST` em Produção
+
+- Em ambiente de produção (`NODE_ENV=production`):
+  - A autorização `unlock_source: 'dev_test'` é **estritamente rejeitada com HTTP 403 (FORBIDDEN)**.
+  - Apenas autorizações via pagamento real (`PAYMENT`) ou administrativo autenticado (`ADMIN`) são permitidas.
+  - Não é possível contornar por query params, cookies ou localStorage.
+
+## 4. Row Level Security (RLS)
+
+- Todas as tabelas possuem RLS habilitado:
+  - Tabelas públicas de catálogo (`places`, `place_categories`, `place_tags`, `place_hours`, `price_observations`, `events`): leitura pública para registros com `active = true`. Escrita restrita ao backend com `service_role`.
+  - Tabelas privadas (`trips`, `trip_profiles`, `trip_days`, `trip_activities`, `payments`, `api_usage`): leitura permitida somente quando o token da requisição corresponde ao `secure_token` da viagem correspondente.
+
+## 5. Auditoria de Segredos no Git
+
+- Arquivos `.env`, `.env.local`, `.data/`, credenciais e logs estão listados no `.gitignore`.
+- Auditoria contínua de padrões de chave privada.

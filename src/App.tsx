@@ -11,15 +11,17 @@ import { MissingQuestionsView } from './views/MissingQuestionsView';
 import { ConfirmationView } from './views/ConfirmationView';
 import { TripGenerationScreen } from './components/TripGenerationScreen';
 import { PaywallPreview } from './components/PaywallPreview';
-import { UnlockedAppView } from './views/UnlockedAppView';
-import { CheckoutModal } from './components/CheckoutModal';
-import { PlaceDetailModal } from './components/PlaceDetailModal';
-import { ReportErrorModal } from './components/ReportErrorModal';
-import { RecoveryModal } from './components/RecoveryModal';
-import { ActivitySwapModal } from './components/ActivitySwapModal';
-import { AdminDashboard } from './components/AdminDashboard';
 import { DevToolbar } from './components/DevToolbar';
 import { AppTab } from './components/BottomNav';
+
+// Code Splitting & Lazy Loading (Sprint 8B - Mobile Performance)
+const UnlockedAppView = React.lazy(() => import('./views/UnlockedAppView').then(m => ({ default: m.UnlockedAppView })));
+const CheckoutModal = React.lazy(() => import('./components/CheckoutModal').then(m => ({ default: m.CheckoutModal })));
+const PlaceDetailModal = React.lazy(() => import('./components/PlaceDetailModal').then(m => ({ default: m.PlaceDetailModal })));
+const ReportErrorModal = React.lazy(() => import('./components/ReportErrorModal').then(m => ({ default: m.ReportErrorModal })));
+const RecoveryModal = React.lazy(() => import('./components/RecoveryModal').then(m => ({ default: m.RecoveryModal })));
+const ActivitySwapModal = React.lazy(() => import('./components/ActivitySwapModal').then(m => ({ default: m.ActivitySwapModal })));
+const AdminDashboard = React.lazy(() => import('./components/AdminDashboard').then(m => ({ default: m.AdminDashboard })));
 
 import { 
   Trip, 
@@ -68,8 +70,8 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const path = window.location.pathname;
 
-    // Check admin
-    if (params.get(ADMIN_PARAM) === 'true') {
+    // Check DUO21 Control Plane (/duo-control) or ?admin=true (Sprint 8C)
+    if (params.get(ADMIN_PARAM) === 'true' || path === '/duo-control' || path.startsWith('/duo-control')) {
       setIsAdminOpen(true);
     }
 
@@ -199,37 +201,70 @@ export default function App() {
     setCurrentScreen('preview');
   };
 
-  // 4. Payment Completed -> Calls FinalItineraryEngine!
-  const handlePaymentSuccess = (token?: string, email?: string) => {
-    const prefs = pendingPreferences || preview?.preferences || trip?.preferences || {
-      name: 'Viajante',
-      start_date: new Date().toISOString().split('T')[0],
-      end_date: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
-      adults_count: 2,
-      children_count: 0,
-      children_ages: [],
-      pace: 'equilibrado' as const,
-      transport: 'carro_alugado' as const,
-      interests: ['Gastronomia', 'Natureza'],
-      mandatory_places: [],
-      restrictions: []
-    };
-
-    const unlockedTrip = finalItineraryEngine.generateFinalItinerary(prefs, 'payment');
-    if (email) {
-      unlockedTrip.preferences.email = email;
-    }
-    if (token) {
-      unlockedTrip.secure_token = token;
-    }
-    setTrip(unlockedTrip);
+  // 4. Payment Completed -> Retrieves Server-Generated Itinerary or Calls FinalItineraryEngine!
+  const handlePaymentSuccess = async (token?: string, email?: string) => {
     setIsCheckoutOpen(false);
+    const targetTripId = trip?.id || preview?.id;
+    let unlockedTrip: Trip | null = null;
+
+    if (token) {
+      try {
+        const res = await fetch(`/api/db/trips/token/${encodeURIComponent(token)}`);
+        if (res.ok) {
+          unlockedTrip = await res.json();
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!unlockedTrip && targetTripId) {
+      try {
+        const res = await fetch(`/api/payments/trip-status/${encodeURIComponent(targetTripId)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.trip && (data.isPaid || data.status === 'ready' || data.status === 'paid')) {
+            unlockedTrip = data.trip;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!unlockedTrip) {
+      const prefs = pendingPreferences || preview?.preferences || trip?.preferences || {
+        name: 'Viajante',
+        start_date: new Date().toISOString().split('T')[0],
+        end_date: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
+        adults_count: 2,
+        children_count: 0,
+        children_ages: [],
+        pace: 'equilibrado' as const,
+        transport: 'carro_alugado' as const,
+        interests: ['Gastronomia', 'Natureza'],
+        mandatory_places: [],
+        restrictions: []
+      };
+
+      unlockedTrip = finalItineraryEngine.generateFinalItinerary(prefs, 'payment');
+      if (email) {
+        unlockedTrip.preferences.email = email;
+      }
+      if (token) {
+        unlockedTrip.secure_token = token;
+      }
+    }
+
+    setTrip(unlockedTrip);
     setCurrentScreen('unlocked');
     trackEvent('payment_completed', { trip_id: unlockedTrip.id });
 
     // Update browser URL silently to secure token link
     try {
-      window.history.replaceState(null, '', `?token=${unlockedTrip.secure_token}`);
+      if (unlockedTrip.secure_token) {
+        window.history.replaceState(null, '', `?token=${unlockedTrip.secure_token}`);
+      }
     } catch {
       // ignore
     }
@@ -496,19 +531,26 @@ export default function App() {
           />
         )}
 
-        {/* UNLOCKED APP VIEW (HOJE, ROTEIRO, MAPA, GUIA) */}
+        {/* UNLOCKED APP VIEW (HOJE, ROTEIRO, MAPA, GUIA) - LAZY LOADED */}
         {currentScreen === 'unlocked' && trip && (
-          <UnlockedAppView
-            trip={trip}
-            initialTab={activeAppTab}
-            onOpenDetails={(act) => setDetailActivity(act)}
-            onSwapActivity={(act) => setSwapActivity(act)}
-            onFindNearby={(act) => {
-              // Open detail with nearby tips
-              setDetailActivity(act);
-            }}
-            onUpdateTrip={(updated) => setTrip(updated)}
-          />
+          <React.Suspense fallback={
+            <div className="min-h-[400px] flex flex-col items-center justify-center gap-3">
+              <div className="w-8 h-8 border-3 border-[#1B4332] border-t-transparent rounded-full animate-spin" />
+              <p className="text-xs text-[#7A6F5D] font-medium">Carregando sua viagem...</p>
+            </div>
+          }>
+            <UnlockedAppView
+              trip={trip}
+              initialTab={activeAppTab}
+              onOpenDetails={(act) => setDetailActivity(act)}
+              onSwapActivity={(act) => setSwapActivity(act)}
+              onFindNearby={(act) => {
+                // Open detail with nearby tips
+                setDetailActivity(act);
+              }}
+              onUpdateTrip={(updated) => setTrip(updated)}
+            />
+          </React.Suspense>
         )}
 
         {/* Demo Shortcut for fast testing */}
@@ -524,70 +566,75 @@ export default function App() {
         )}
       </main>
 
-      {/* MODALS */}
+      {/* MODALS - LAZY LOADED */}
+      <React.Suspense fallback={
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-8 h-8 border-3 border-[#1B4332] border-t-transparent rounded-full animate-spin" />
+        </div>
+      }>
+        {/* 1. Checkout Modal (Asaas Gateway / PIX / Card) */}
+        {isCheckoutOpen && (preview || trip) && (
+          <CheckoutModal
+            trip={trip}
+            preview={preview}
+            onClose={() => setIsCheckoutOpen(false)}
+            onPaymentSuccess={handlePaymentSuccess}
+          />
+        )}
 
-      {/* 1. Checkout Modal (Asaas Gateway / PIX / Card) */}
-      {isCheckoutOpen && (preview || trip) && (
-        <CheckoutModal
-          trip={trip}
-          preview={preview}
-          onClose={() => setIsCheckoutOpen(false)}
-          onPaymentSuccess={handlePaymentSuccess}
-        />
-      )}
+        {/* 2. Place Detail Modal */}
+        {detailActivity && (
+          <PlaceDetailModal
+            activity={detailActivity}
+            onClose={() => setDetailActivity(null)}
+            onReportError={(place) => {
+              setReportPlace(place);
+            }}
+          />
+        )}
 
-      {/* 2. Place Detail Modal */}
-      {detailActivity && (
-        <PlaceDetailModal
-          activity={detailActivity}
-          onClose={() => setDetailActivity(null)}
-          onReportError={(place) => {
-            setReportPlace(place);
-          }}
-        />
-      )}
+        {/* 3. Activity Swap Modal */}
+        {swapActivity && (
+          <ActivitySwapModal
+            activity={swapActivity}
+            onClose={() => setSwapActivity(null)}
+            onSelectNewPlace={handleSwapPlace}
+            remainingChangesToday={trip ? Math.max(0, trip.usage_stats.structural_changes_limit - trip.usage_stats.structural_changes_today) : 3}
+          />
+        )}
 
-      {/* 3. Activity Swap Modal */}
-      {swapActivity && (
-        <ActivitySwapModal
-          activity={swapActivity}
-          onClose={() => setSwapActivity(null)}
-          onSelectNewPlace={handleSwapPlace}
-          remainingChangesToday={trip ? Math.max(0, trip.usage_stats.structural_changes_limit - trip.usage_stats.structural_changes_today) : 3}
-        />
-      )}
+        {/* 4. Report Error Modal */}
+        {reportPlace && (
+          <ReportErrorModal
+            placeName={reportPlace.name}
+            placeId={reportPlace.id}
+            onClose={() => setReportPlace(null)}
+            onSubmitReport={handleSubmitReport}
+          />
+        )}
 
-      {/* 4. Report Error Modal */}
-      {reportPlace && (
-        <ReportErrorModal
-          placeName={reportPlace.name}
-          placeId={reportPlace.id}
-          onClose={() => setReportPlace(null)}
-          onSubmitReport={handleSubmitReport}
-        />
-      )}
+        {/* 5. Recovery Modal */}
+        {isRecoveryOpen && (
+          <RecoveryModal
+            onClose={() => setIsRecoveryOpen(false)}
+            onRecoverTrip={handleRecoverTrip}
+          />
+        )}
 
-      {/* 5. Recovery Modal */}
-      {isRecoveryOpen && (
-        <RecoveryModal
-          onClose={() => setIsRecoveryOpen(false)}
-          onRecoverTrip={handleRecoverTrip}
-        />
-      )}
-
-      {/* 6. Admin Panel Modal */}
-      {isAdminOpen && (
-        <AdminDashboard
-          onClose={() => setIsAdminOpen(false)}
-          reports={reports}
-          onApproveReport={(id) => {
-            setReports(prev => prev.map(r => r.id === id ? { ...r, status: 'approved' } : r));
-          }}
-          onRejectReport={(id) => {
-            setReports(prev => prev.map(r => r.id === id ? { ...r, status: 'rejected' } : r));
-          }}
-        />
-      )}
+        {/* 6. Admin Panel Modal */}
+        {isAdminOpen && (
+          <AdminDashboard
+            onClose={() => setIsAdminOpen(false)}
+            reports={reports}
+            onApproveReport={(id) => {
+              setReports(prev => prev.map(r => r.id === id ? { ...r, status: 'approved' } : r));
+            }}
+            onRejectReport={(id) => {
+              setReports(prev => prev.map(r => r.id === id ? { ...r, status: 'rejected' } : r));
+            }}
+          />
+        )}
+      </React.Suspense>
 
       {/* 7. DEV Floating Toolbar (Sprint 0C requirement 23) */}
       <DevToolbar

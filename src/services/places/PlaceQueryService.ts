@@ -1,5 +1,6 @@
 import { Place, City, PlaceCategory } from '../../types';
-import { placeRepository, PlaceRepository } from '../repositories/PlaceRepository';
+import { PlaceRepository } from '../repositories/PlaceRepository';
+import { placeRepository, cacheRepository } from '../repositories/RepositoryFactory';
 
 export interface PlaceQueryParams {
   city?: City;
@@ -16,7 +17,7 @@ export interface PlaceQueryParams {
 
 /**
  * Calculates geographic distance using Haversine formula (in kilometers).
- * Requirement 30: Used for fast pre-filtering and proximity scoring before calling any Routes API.
+ * Used for fast pre-filtering and proximity scoring before calling any Routes API.
  */
 export function calculateHaversineDistanceKm(
   lat1: number,
@@ -41,10 +42,16 @@ export class PlaceQueryService {
   constructor(private repo: PlaceRepository = placeRepository) {}
 
   /**
-   * Executes structured queries using local database rules, tags, and categories.
-   * Requirement 26 & 32: Gemini is NEVER used to search for places in the database.
+   * Flow: CACHE -> SUPABASE (or Repository) -> EXTERNAL API
+   * Section 33 & 34: Supabase first, no LLM inside candidate search.
    */
   async queryPlaces(params: PlaceQueryParams): Promise<Place[]> {
+    const cacheKey = `places:query:${JSON.stringify(params)}`;
+    const cached = await cacheRepository.get<Place[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     let places = await this.repo.getAllPlaces();
 
     // 1. Filter active
@@ -61,7 +68,7 @@ export class PlaceQueryService {
       places = places.filter(p => cats.includes(p.category));
     }
 
-    // 4. Budget filter (Requirement 27: "Almoço até R$80")
+    // 4. Budget filter
     if (params.maxCostPerPerson !== undefined && params.maxCostPerPerson > 0) {
       places = places.filter(p => {
         const price = p.price_info.adult_price || 0;
@@ -87,7 +94,7 @@ export class PlaceQueryService {
       places = places.filter(p => p.children_friendly);
     }
 
-    // 7. Structured text search (Requirement 27: "fondue", "natureza", "churrasco")
+    // 7. Structured text search
     if (params.queryText) {
       const q = params.queryText.toLowerCase();
       places = places.filter(p => 
@@ -97,7 +104,7 @@ export class PlaceQueryService {
       );
     }
 
-    // 8. Distance sorting and pre-filtering (Requirement 30: Haversine)
+    // 8. Distance sorting and pre-filtering (Haversine)
     if (params.nearCoords) {
       const { latitude, longitude, maxDistanceKm } = params.nearCoords;
       places = places
@@ -110,13 +117,12 @@ export class PlaceQueryService {
         .map(item => item.place);
     }
 
+    // Save into cache (1 hour TTL)
+    await cacheRepository.set(cacheKey, 'SUPABASE', 'queryPlaces', places, 3600);
+
     return places;
   }
 
-  /**
-   * Helper that converts natural intents into structured query parameters.
-   * Requirement 27: e.g. "Quero um fondue legal" -> category = RESTAURANT, queryText = 'fondue'
-   */
   async findFondueRestaurants(city?: City, maxPrice?: number): Promise<Place[]> {
     return this.queryPlaces({
       city,

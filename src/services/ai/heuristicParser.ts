@@ -159,6 +159,10 @@ export function heuristicParseTripInput(rawText: string): ParseTripPromptResult 
   } else if (text.includes('não sei onde ficar') || text.includes('ainda não sei onde') || text.includes('procurando onde')) {
     preferences.accommodation_status = 'undecided';
     preferences.accommodation = { city: primaryCity, wants_help_finding: true };
+  } else if (text.includes('já temos hospedagem') || text.includes('ja temos hospedagem') || text.includes('hospedagem reservada') || text.includes('temos hospedagem em gramado')) {
+    preferences.accommodation_status = 'booked';
+    preferences.hotel_name = 'Hospedagem em Gramado';
+    preferences.accommodation = { name: 'Hospedagem em Gramado', city: primaryCity };
   } else {
     const hotelNamedMatch = rawText.match(/(?:hotel|pousada|resort|airbnb|flat|chalé|cabana)\s+([A-ZÁÉÍÓÚÂÊÔÃÕ][a-zA-Z0-9\s]+?)(?:,|\.|\bem\b|\bna\b|$)/i);
     if (hotelNamedMatch && hotelNamedMatch[1] && !text.includes('ainda não') && !text.includes('quero um hotel')) {
@@ -262,7 +266,15 @@ export function heuristicParseTripInput(rawText: string): ParseTripPromptResult 
     interests.push('Fotos e Mirantes');
   }
 
+  if (text.includes('lugares gratuitos') || text.includes('passeios gratuitos') || text.includes('grátis') || text.includes('gratuito')) {
+    interests.push('Passeios Gratuitos');
+    niceToHaves.push('Experiências Gratuitas e Contemplativas');
+  }
+
   // Avoids
+  if (text.includes('não quero que todos os passeios sejam caros') || text.includes('não quero tudo caro') || text.includes('gastar pouco com passeios')) {
+    avoids.push('Atrações de custo excessivo em série');
+  }
   if (text.includes('não quero ficar correndo') || text.includes('sem correria') || text.includes('sem pressa')) {
     avoids.push('Ritmo acelerado e excesso de atividades');
   }
@@ -275,6 +287,10 @@ export function heuristicParseTripInput(rawText: string): ParseTripPromptResult 
 
   if (interests.length === 0) {
     interests.push('Natureza', 'Gastronomia', 'Pontos Turísticos');
+  }
+
+  if (!preferences.name) {
+    preferences.name = text.includes('somos') || children > 0 ? 'Família Silva' : 'Viajante';
   }
 
   preferences.interests = Array.from(new Set(interests));

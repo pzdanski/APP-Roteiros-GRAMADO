@@ -1,27 +1,54 @@
-# Banco de Dados - Supabase PostgreSQL
+# Arquitetura de Banco de Dados — DUO21 / Divulga Lugares
 
-## 1. Estratégia de Dados
+## 1. Princípio Fundamental: SUPABASE = SOURCE OF TRUTH
 
-O banco de dados principal do ecossistema é o **Supabase PostgreSQL**. O Firebase **não** é utilizado como banco de dados principal.
+No ecossistema DUO21:
+- **SUPABASE É A FONTE DA VERDADE ÚNICA.**
+- **MOCK IS NEVER A PRODUCTION FALLBACK.**
+- Se o Supabase falhar em ambiente de produção ou com `DATA_MODE=supabase`, o sistema retorna erro controlado (`DATABASE_UNAVAILABLE`).
+- É estritamente proibido criar arquivos locais ou cair para mocks silenciosos em produção.
 
-## 2. Tabelas Principais
+## 2. Modos de Dados (`DATA_MODE`)
 
-- `travelers`: Cadastro do turista (e-mail, nome, telefone).
-- `trips`: Viagem associada com `secure_token` único (ex: `v_4x9...`), status (`draft`, `preview`, `paid`, `archived`) e preço cobrado.
-- `trip_preferences`: Preferências, datas, quantidade de adultos/crianças, idades, orçamento, hotel, transporte e ritmo.
-- `trip_days`: Dias do roteiro, cidade foco, título temático e estimativa diária.
-- `trip_activities`: Atividades em cada dia com horários, tempos de deslocamento e referências a locais.
-- `trip_usage`: Controle diário de mensagens do Guia (teto de 30 msgs) e alterações estruturais (teto de 3 por dia).
-- `places`: Catálogo oficial de locais turísticos (Gramado, Canela e Nova Petrópolis) com coordenadas, duração, tipo de clima (`indoor`, `outdoor`, `mixed`, `rain_ok`) e dicas Divulga Lugares.
-- `place_prices`: Histórico e confirmação de preços com nível de confiança (`high`, `medium`, `low`, `unknown`) e data de checagem.
-- `events`: Eventos âncora (Natal Luz, Sonho de Natal, Festival de Cinema, etc.).
-- `payment_orders`: Cobranças Asaas (PIX / Cartão) com status e payload do webhook.
-- `user_reports`: Relatos de usuários para auditoria da curadoria (divergência de preços ou horários).
+A seleção da camada de dados é controlada centralizadamente pela `RepositoryFactory`:
 
-## 3. Segurança e RLS (Row Level Security)
+1. `DATA_MODE=supabase`:
+   - Utilizado em produção e homologação conectada.
+   - Comunicação backend via `@supabase/supabase-js` com `SUPABASE_SERVICE_ROLE_KEY` exclusiva no servidor.
+   - Frontend consome rotas protegidas em `/api/db/*`.
+   - Se a conexão falhar, lança erro `DATABASE_UNAVAILABLE`.
 
-Todas as tabelas possuem RLS ativado:
-- `places` e `events`: Acesso público para leitura (somente registros ativos).
-- `trips`: Acesso condicionado ao `secure_token` da viagem.
-- `payment_orders`: Restrito ao backend ou proprietário da sessão.
-- Nenhuma `SERVICE_ROLE_KEY` é injetada no frontend.
+2. `DATA_MODE=mock`:
+   - Permitido **apenas** em desenvolvimento e testes automatizados.
+   - Bloqueado em produção: se `NODE_ENV=production` e `DATA_MODE=mock`, o servidor recusa a inicialização imediatamente.
+   - Exibe claramente no console e nos diagnósticos: `MOCK DATA`.
+
+## 3. Fluxo de Dados e Caching
+
+```
+CACHE (external_data_cache)
+   ↓ (se miss)
+SUPABASE (Postgres & RLS)
+   ↓ (se candidato não catalogado)
+API EXTERNA (Google Places / Routes - sob demanda com CostGuard)
+```
+
+## 4. Migrações Versionadas (`supabase/migrations/`)
+
+1. `20260925000001_create_core_schema.sql`:
+   - Tabelas estruturais: `places`, `place_categories`, `place_tags`, `place_tag_relations`, `place_hours`, `price_observations`, `data_sources`, `events`, `trips`, `trip_profiles`, `trip_days`, `trip_activities`, `trip_previews`, `payments`, `api_usage`, `external_data_cache`, `user_reports`.
+2. `20260925000002_enable_rls_policies.sql`:
+   - Row Level Security (RLS) em 100% das tabelas.
+   - Catálogo com leitura pública para ativos.
+   - Viagens protegidas por `secure_token`.
+3. `20260925000003_seed_catalog_and_sources.sql`:
+   - Carga inicial curada para Gramado, Canela e Nova Petrópolis (27 locais, horários, preços por temporada).
+4. `20260925000004_hardening_indexes_and_rpc.sql`:
+   - Índices de performance para cidades, categorias, tags, horários, tokens e cache.
+   - RPC Postgres `get_candidate_places(...)` para pré-filtragem estruturada sem IA.
+
+## 5. Rastreabilidade
+Todo dado no catálogo informa:
+- `source_id`: Identificador da fonte (`duo21_curatorship`, `official_gramado`, etc.).
+- `checked_at`: Data da última auditoria.
+- `confidence`: Nível de confiança (`high`, `medium`, `low`).

@@ -28,6 +28,132 @@ export interface PlacePriceInfo {
   confidence: ConfidenceLevel;
 }
 
+export type DataStatus = 
+  | 'DISCOVERED' 
+  | 'PENDING_REVIEW' 
+  | 'VERIFIED' 
+  | 'ACTIVE' 
+  | 'INACTIVE' 
+  | 'REJECTED' 
+  | 'STALE';
+
+export type BusinessStatus = 'OPERATIONAL' | 'CLOSED_TEMPORARILY' | 'CLOSED_PERMANENTLY';
+
+export type WalkingIntensity = 'LOW' | 'MODERATE' | 'HIGH';
+
+export type CostBand = 'FREE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'PREMIUM' | 'UNKNOWN' | 'ECONOMICO' | 'MODERADO' | 'SUPERIOR';
+
+export type PriceSeasonality = 'LOW_SEASON' | 'REGULAR' | 'HIGH_SEASON' | 'SPECIAL_EVENT';
+
+export interface FieldProvenance {
+  coordinates_source?: string;
+  hours_source?: string;
+  cost_source?: string;
+  duration_source?: string;
+  tags_source?: string;
+  children_profile_source?: string;
+  senior_profile_source?: string;
+}
+
+export interface DataObservation {
+  id: string;
+  place_id: string;
+  field_name: string;
+  value: any;
+  source_id: string;
+  source_name: string;
+  source_url?: string;
+  observed_at: string;
+  valid_from?: string;
+  valid_until?: string;
+  confidence: ConfidenceLevel;
+}
+
+export interface PriceObservation {
+  id: string;
+  place_id: string;
+  seasonality: PriceSeasonality;
+  cost_category: CostBand;
+  estimated_min: number;
+  estimated_max: number;
+  currency: string;
+  source_name: string;
+  source_url?: string;
+  observed_at: string;
+  valid_until?: string;
+  confidence: ConfidenceLevel;
+  notes?: string;
+}
+
+export type DataFreshnessStatus = 'FRESH' | 'AGING' | 'STALE' | 'UNKNOWN';
+
+export interface FieldFreshness {
+  field_name: string;
+  status: DataFreshnessStatus;
+  last_observed_at?: string;
+  age_days?: number;
+  max_age_days: number;
+}
+
+export interface PlaceFreshnessReport {
+  place_id: string;
+  overall_status: DataFreshnessStatus;
+  is_stale: boolean;
+  needs_validation: boolean;
+  fields: FieldFreshness[];
+}
+
+export interface DataQualityScore {
+  place_id: string;
+  score: number; // 0 - 100
+  grade: 'A' | 'B' | 'C' | 'D';
+  breakdown: {
+    has_coordinates: boolean;
+    has_place_id: boolean;
+    has_hours: boolean;
+    has_cost_range: boolean;
+    has_tags: boolean;
+    is_fresh: boolean;
+    source_reliability: ConfidenceLevel;
+    verified: boolean;
+  };
+  missing_fields: string[];
+}
+
+export type IngestionJobStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'PARTIAL' | 'FAILED';
+
+export interface DataIngestionJob {
+  id: string;
+  source_id: string;
+  source_name: string;
+  started_at: string;
+  finished_at?: string;
+  status: IngestionJobStatus;
+  records_found: number;
+  records_created: number;
+  records_updated: number;
+  records_flagged: number;
+  estimated_cost_brl: number;
+  ai_calls_count: number;
+  provider_calls_count: number;
+  errors: string[];
+}
+
+export interface DataSourceInfo {
+  id: string;
+  name: string;
+  type: 'OFFICIAL_WEBSITE' | 'OFFICIAL_TOURISM' | 'OFFICIAL_API' | 'REGIONAL_PARTNER' | 'GOOGLE_PLACES' | 'EDITORIAL_DUO21' | 'COLLABORATIVE' | 'SCRAPED';
+  base_url: string;
+  status: ProviderStatus;
+  city?: City;
+  refresh_frequency_days: number;
+  last_ingested_at?: string;
+  last_success_at?: string;
+  records_count?: number;
+  error_count?: number;
+  reliability_level: ConfidenceLevel;
+}
+
 export interface PlaceMedia {
   url: string;
   caption?: string;
@@ -45,6 +171,7 @@ export interface Place {
   latitude: number;
   longitude: number;
   address: string;
+  google_place_id?: string;
   phone?: string;
   whatsapp?: string;
   website?: string;
@@ -72,10 +199,35 @@ export interface Place {
     curator_badge: string;
   };
   
+  tags?: string[];
+  suitable_for?: string[];
   active: boolean;
   is_demo: boolean;
   created_at: string;
   updated_at: string;
+
+  // Sprint 5 Real Tourism Base Extensions
+  data_status?: DataStatus;
+  business_status?: BusinessStatus;
+  duration_min?: number;
+  duration_max?: number;
+  suitable_for_children?: boolean;
+  child_interest_score?: number; // 1 to 10
+  age_min?: number;
+  age_max?: number;
+  senior_friendly?: boolean;
+  walking_intensity?: WalkingIntensity;
+  cost_band?: CostBand;
+  cost_min?: number;
+  cost_max?: number;
+  provenance?: FieldProvenance;
+  source_id?: string;
+  source_url?: string;
+  checked_at?: string;
+  confidence?: ConfidenceLevel;
+  content_id?: string;
+  content_type?: 'REEL' | 'VIDEO' | 'ARTICLE' | 'PHOTO' | 'TIP';
+  content_url?: string;
 }
 
 export interface SerraEvent {
@@ -174,6 +326,8 @@ export interface TripPreferences {
   hotel_name?: string;
   hotel_city?: City;
   hotel_address?: string;
+  accommodation_place_id?: string;
+  logistics_anchor?: { latitude: number; longitude: number; label: string; city: City };
   budget_total?: number;
   budget_attractions?: number;
   budget_food_per_person?: number;
@@ -221,6 +375,48 @@ export interface PreviewActivity {
   };
 }
 
+export type WeatherCondition = 
+  | 'CLEAR' 
+  | 'PARTLY_CLOUDY' 
+  | 'CLOUDY' 
+  | 'RAIN' 
+  | 'HEAVY_RAIN' 
+  | 'STORM' 
+  | 'COLD' 
+  | 'HOT' 
+  | 'UNKNOWN';
+
+export type PlaceWeatherSuitability = 'INDOOR' | 'OUTDOOR' | 'MIXED' | 'RAIN_OK';
+
+export interface NormalizedWeatherForecast {
+  date: string; // YYYY-MM-DD
+  city: City;
+  condition: WeatherCondition;
+  temp_min: number;
+  temp_max: number;
+  rain_probability: number;
+  precipitation_mm?: number;
+  is_indoor_recommended: boolean;
+  summary: string;
+  forecast_unavailable?: boolean;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  provider: 'OPEN_METEO' | 'GOOGLE_WEATHER' | 'MOCK' | 'SEASONAL';
+  cached?: boolean;
+}
+
+export interface RouteSegment {
+  origin: { lat: number; lng: number; label?: string };
+  destination: { lat: number; lng: number; label?: string };
+  distance_km: number;
+  duration_minutes: number;
+  duration_with_buffer_minutes: number;
+  traffic_status?: 'light' | 'moderate' | 'heavy';
+  travel_mode: 'DRIVING' | 'WALKING' | 'TRANSIT';
+  polyline?: string;
+  provider: 'GOOGLE_ROUTES' | 'OSRM' | 'HAVERSINE_MOUNTAIN' | 'CACHE' | 'MOCK';
+  cached?: boolean;
+}
+
 export interface PreviewDay {
   day_number: number;
   date: string; // YYYY-MM-DD
@@ -255,11 +451,14 @@ export interface TripActivity {
   duration_minutes: number;
   travel_time_from_prev_minutes: number;
   distance_km_from_prev: number;
+  travel_buffer_minutes?: number;
   estimated_cost_per_person: number;
   is_anchor_event?: boolean;
   event_details?: SerraEvent;
   locked?: boolean; // For preview paywall (blurred info)
   weather_status?: 'ideal' | 'indoor_safe' | 'alert';
+  weather_suitability?: PlaceWeatherSuitability;
+  route_segment?: RouteSegment;
   notes?: string;
 }
 
@@ -270,12 +469,13 @@ export interface TripDay {
   theme_title: string;
   activities: TripActivity[];
   total_day_cost_estimated: number;
-  weather_forecast?: {
+  estimated_daily_cost_min?: number;
+  estimated_daily_cost_max?: number;
+  weather_forecast?: NormalizedWeatherForecast | {
     summary: string;
     temp_min: number;
     temp_max: number;
     rain_probability: number;
-    icon: string;
   };
 }
 
@@ -288,7 +488,7 @@ export interface TripUsageStats {
   full_regenerations_limit: number;
 }
 
-export type TripStatus = 'draft' | 'preview' | 'paid' | 'archived';
+export type TripStatus = 'draft' | 'preview' | 'paid' | 'ready' | 'archived';
 
 export type UnlockSource = 'payment' | 'dev_test' | 'admin';
 
@@ -301,6 +501,8 @@ export interface Trip {
   price_tier_id: string;
   price_brl: number;
   total_estimated_spend_brl: number;
+  estimated_trip_cost_min?: number;
+  estimated_trip_cost_max?: number;
   logistics_base?: LogisticsBase;
   created_at: string;
   paid_at?: string;
@@ -361,7 +563,18 @@ export interface MediaItem {
 
 export type PaymentMethod = 'pix' | 'credit_card';
 
+export type NormalizedPaymentStatus = 
+  | 'CREATED'
+  | 'PENDING'
+  | 'CONFIRMED'
+  | 'PAID'
+  | 'FAILED'
+  | 'CANCELLED'
+  | 'REFUNDED'
+  | 'EXPIRED';
+
 export type PaymentStatus = 
+  | NormalizedPaymentStatus
   | 'pending' 
   | 'processing' 
   | 'paid' 
@@ -376,11 +589,18 @@ export interface PaymentOrder {
   payment_method: PaymentMethod;
   status: PaymentStatus;
   asaas_payment_id?: string;
+  asaas_customer_id?: string;
   pix_qr_code?: string;
   pix_copy_paste?: string;
+  pix_expiration_date?: string;
+  customer_name?: string;
+  customer_email?: string;
+  customer_cpf?: string;
   created_at: string;
   updated_at: string;
+  paid_at?: string;
   is_sandbox: boolean;
+  idempotency_key?: string;
 }
 
 export interface UserReport {
