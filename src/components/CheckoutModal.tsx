@@ -49,6 +49,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const [pixCopyCode, setPixCopyCode] = useState('');
   const [pixQrCodeUrl, setPixQrCodeUrl] = useState('');
   const [isPaid, setIsPaid] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   const pollIntervalRef = useRef<any>(null);
 
@@ -82,6 +83,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     if (!customerEmail || !customerName) return;
 
     setIsProcessing(true);
+    setCheckoutError(null);
     trackEvent('checkout_started', { amount: priceBrl, method });
 
     try {
@@ -108,13 +110,15 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
       setOrderCreated(true);
       setIsProcessing(false);
-    } catch {
+    } catch (err: any) {
+      setCheckoutError(err.message || 'Erro ao gerar cobrança segura no Asaas. Verifique os dados e tente novamente.');
       setIsProcessing(false);
     }
   };
 
   const handleSimulateInstantApproval = async () => {
     setIsProcessing(true);
+    setCheckoutError(null);
     trackEvent('payment_simulated_sandbox', { tripId });
 
     try {
@@ -125,8 +129,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
       setTimeout(() => {
         onPaymentSuccess(secureToken, customerEmail);
       }, 500);
-    } catch {
-      onPaymentSuccess(secureToken, customerEmail);
+    } catch (err: any) {
+      setCheckoutError(err.message || 'Simulação de pagamento indisponível.');
     } finally {
       setIsProcessing(false);
     }
@@ -229,6 +233,35 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 </span>
               </div>
 
+              <div>
+                <label className="block text-xs font-semibold text-[#1B4332] mb-1">
+                  CPF do Titular (obrigatório para emissão do PIX pelo Banco Central)
+                </label>
+                <div className="relative">
+                  <CreditCard className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                  <input
+                    id="input-checkout-cpf"
+                    type="text"
+                    required
+                    value={customerCpf}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, '').slice(0, 11);
+                      let formatted = digits;
+                      if (digits.length > 9) {
+                        formatted = `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
+                      } else if (digits.length > 6) {
+                        formatted = `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
+                      } else if (digits.length > 3) {
+                        formatted = `${digits.slice(0, 3)}.${digits.slice(3)}`;
+                      }
+                      setCustomerCpf(formatted);
+                    }}
+                    placeholder="000.000.000-00"
+                    className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-[#E7DFCE] focus:border-[#1B4332] focus:ring-2 focus:ring-[#1B4332]/15 text-sm outline-none font-mono"
+                  />
+                </div>
+              </div>
+
               {/* Payment Method Selector */}
               <div>
                 <label className="block text-xs font-semibold text-[#1B4332] mb-1.5">
@@ -263,10 +296,17 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 </div>
               </div>
 
+              {checkoutError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-red-500 mt-0.5" />
+                  <span>{checkoutError}</span>
+                </div>
+              )}
+
               <button
                 id="btn-generate-payment"
                 type="submit"
-                disabled={isProcessing || !customerEmail || !customerName}
+                disabled={isProcessing || !customerEmail || !customerName || customerCpf.replace(/\D/g, '').length !== 11}
                 className="w-full py-3.5 bg-[#1B4332] hover:bg-[#2D6A4F] disabled:opacity-50 text-white font-bold text-sm rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2"
               >
                 {isProcessing ? 'Gerando cobrança segura...' : `Pagar R$ ${priceBrl.toFixed(2).replace('.', ',')} e Desbloquear`}
@@ -301,7 +341,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                       type="text"
                       readOnly
                       value={pixCopyCode}
-                      className="flex-1 bg-white text-xs text-[#1E293B] px-3 py-2 rounded-xl border border-[#E7DFCE] outline-none"
+                      className="flex-1 bg-white text-xs text-[#1E293B] px-3 py-2 rounded-xl border border-[#E7DFCE] outline-none font-mono"
                     />
                     <button
                       id="btn-copy-pix-code"
@@ -316,26 +356,28 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 </div>
               )}
 
-              {/* Dev Sandbox Simulator */}
-              <div className="bg-amber-50 p-3.5 rounded-2xl border border-amber-200 text-left space-y-2">
-                <div className="flex items-center gap-1.5 text-amber-800 font-bold text-xs">
-                  <AlertCircle className="w-4 h-4 text-amber-600" />
-                  <span>Ambiente Sandbox / Modo Teste</span>
+              {/* Dev-only Sandbox Simulator (Excluded in production builds) */}
+              {Boolean((import.meta as any).env?.DEV) && (
+                <div className="bg-amber-50 p-3.5 rounded-2xl border border-amber-200 text-left space-y-2">
+                  <div className="flex items-center gap-1.5 text-amber-800 font-bold text-xs">
+                    <AlertCircle className="w-4 h-4 text-amber-600" />
+                    <span>Ambiente Dev / Testes Locais</span>
+                  </div>
+                  <p className="text-[11px] text-amber-900 leading-relaxed">
+                    Disponível apenas em ambiente de desenvolvimento local para testes:
+                  </p>
+                  <button
+                    id="btn-simulate-instant-payment"
+                    type="button"
+                    onClick={handleSimulateInstantApproval}
+                    disabled={isProcessing}
+                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span>Simular Pagamento Confirmado (Webhook Asaas)</span>
+                  </button>
                 </div>
-                <p className="text-[11px] text-amber-900 leading-relaxed">
-                  Para fins de teste e demonstração imediata no ambiente de desenvolvimento, você pode simular a confirmação instantânea do webhook de pagamento:
-                </p>
-                <button
-                  id="btn-simulate-instant-payment"
-                  type="button"
-                  onClick={handleSimulateInstantApproval}
-                  disabled={isProcessing}
-                  className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-1.5"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>Simular Pagamento Confirmado (Webhook Asaas)</span>
-                </button>
-              </div>
+              )}
             </div>
           )}
 

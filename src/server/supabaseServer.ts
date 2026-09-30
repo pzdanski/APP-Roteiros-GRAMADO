@@ -528,6 +528,48 @@ export const supabaseServer = {
   // ---------------------------------------------------------------------------
   // API Usage (api_usage)
   // ---------------------------------------------------------------------------
+  // PAYMENT ORDERS (Asaas & PIX Checkout)
+  // ---------------------------------------------------------------------------
+  async savePaymentOrder(order: any): Promise<any> {
+    const entry = {
+      id: order.id,
+      trip_id: order.trip_id,
+      amount_brl: Number(order.amount_brl || 0),
+      payment_method: order.payment_method || 'pix',
+      status: (order.status || 'PENDING').toLowerCase(),
+      asaas_payment_id: order.asaas_payment_id || null,
+      customer_name: order.customer_name || null,
+      customer_email: order.customer_email || 'turista@duo21.com.br',
+      customer_cpf: order.customer_cpf || null,
+      pix_qr_code: order.pix_qr_code || null,
+      pix_copy_paste: order.pix_copy_paste || null,
+      is_sandbox: Boolean(order.is_sandbox),
+      paid_at: order.paid_at || null,
+      created_at: order.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    if (env.DATA_MODE === 'mock') {
+      const idx = mockStore.payments.findIndex((p: any) => p.id === order.id || (order.asaas_payment_id && p.asaas_payment_id === order.asaas_payment_id));
+      if (idx >= 0) mockStore.payments[idx] = { ...mockStore.payments[idx], ...entry };
+      else mockStore.payments.push(entry);
+      return entry;
+    }
+
+    if (!serverClient) return entry;
+
+    try {
+      const { error } = await serverClient.from('payment_orders').upsert(entry);
+      if (error) {
+        console.warn('[Supabase Server] payment_orders upsert warning:', error.message);
+      }
+    } catch (err: any) {
+      console.warn('[Supabase Server] payment_orders exception:', err.message);
+    }
+    return entry;
+  },
+
+  // ---------------------------------------------------------------------------
   async logApiUsage(record: any): Promise<void> {
     const entry = {
       id: record.id || `usage_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,

@@ -75,8 +75,8 @@ async function runValidation() {
   console.log('\n--- 3. CRIAR VIAGEM DE TESTE ---');
   const testTripId = `trip_sprint71_${Date.now()}`;
   const testCpf = generateValidCPF();
-  const testCustomerEmail = `turista.sprint71_${Date.now()}@duo21.com.br`;
-  const testCustomerName = 'Turista Teste Sprint 7.1';
+  const testCustomerEmail = `paulinho_${Date.now()}@duo21.com.br`;
+  const testCustomerName = 'Paulinho';
   const startDate = '2026-10-10';
   const endDate = '2026-10-13'; // 4 dias
 

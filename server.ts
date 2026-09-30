@@ -206,7 +206,8 @@ async function startServer() {
       weather: weatherHealth.status.toLowerCase(),
       weather_details: weatherHealth.details,
       environment: env.NODE_ENV,
-      asaas_env: env.ASAAS_ENV,
+      asaas: asaasServerProvider.isConfigured() ? 'connected' : 'configuration_required',
+      asaas_env: asaasServerProvider.getEnvironment(),
       cloudflare_ready: true,
       timestamp: new Date().toISOString()
     });
@@ -624,11 +625,16 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
           customerName,
           customerEmail,
           customerCpf,
-          description: `Roteiro Inteligente DUO21 (${priceCalculation.days} dias - Serra Gaúcha)`
+          description: `Roteiro Inteligente DUO21 | ${priceCalculation.days} dias | Serra Gaúcha`
         });
 
-        // 3. Persist payment order in memory database
+        // 3. Persist payment order in memory database & Supabase
         orderDatabase.set(paymentOrder.id, paymentOrder);
+        try {
+          await supabaseServer.savePaymentOrder(paymentOrder);
+        } catch (dbErr) {
+          console.warn('[Checkout] Warning persisting payment order to Supabase:', dbErr);
+        }
 
         // Audit Log: PAYMENT_CREATED
         paymentEvents.push({
@@ -780,6 +786,11 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
         targetOrder.status = 'PAID';
         targetOrder.paid_at = new Date().toISOString();
         orderDatabase.set(targetOrder.id, targetOrder);
+        try {
+          await supabaseServer.savePaymentOrder(targetOrder);
+        } catch {
+          // ignore
+        }
       }
 
       // Generate the official real itinerary via FinalItineraryEngine!
@@ -896,8 +907,17 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
     res.json(paymentEvents);
   });
 
-  // Dev / Sandbox Instant Webhook Simulator (Runs true backend generation!)
-  app.post(['/api/payments/simulate-webhook', '/api/payment/simulate-webhook'], async (req, res) => {
+  // Dev / Sandbox Instant Webhook Simulator (Protected: disabled in production, requires admin in dev)
+  app.post(
+    ['/api/payments/simulate-webhook', '/api/payment/simulate-webhook'],
+    (req, res, next) => {
+      if (env.NODE_ENV === 'production') {
+        res.status(403).json({ error: 'Endpoint de simulação indisponível em produção.' });
+        return;
+      }
+      requireAdmin(req, res, next);
+    },
+    async (req, res) => {
     const { orderId, tripId } = req.body;
     let order: any = null;
 
@@ -990,6 +1010,11 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
           order.status = 'PAID';
           order.paid_at = new Date().toISOString();
           orderDatabase.set(order.id, order);
+          try {
+            await supabaseServer.savePaymentOrder(order);
+          } catch {
+            // ignore
+          }
 
           paymentEvents.push({
             id: `evt_poll_paid_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,

@@ -9,7 +9,8 @@ export const APP_PRICING_TIERS: PriceTier[] = [
   { minDays: 1, maxDays: 7, priceBrl: 19.90, label: '1 a 7 dias' },
   { minDays: 8, maxDays: 10, priceBrl: 24.90, label: '8 a 10 dias' },
   { minDays: 11, maxDays: 14, priceBrl: 29.90, label: '11 a 14 dias' },
-  { minDays: 15, maxDays: 21, priceBrl: 39.90, label: '15 a 21 dias' }
+  { minDays: 15, maxDays: 21, priceBrl: 39.90, label: '15 a 21 dias' },
+  { minDays: 22, maxDays: 365, priceBrl: 49.90, label: 'Mais de 21 dias' }
 ];
 
 export class PriceService {

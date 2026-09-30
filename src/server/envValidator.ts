@@ -1,3 +1,5 @@
+import fs from 'fs';
+
 export interface ValidatedEnv {
   NODE_ENV: 'development' | 'production' | 'test';
   DATA_MODE: 'supabase' | 'mock';
@@ -17,6 +19,22 @@ export interface ValidatedEnv {
 }
 
 export function validateServerEnv(): ValidatedEnv {
+  // If running in development and /app/.dev.env.json exists, populate any missing keys
+  try {
+    const devJson = '/app/.dev.env.json';
+    if (fs.existsSync(devJson)) {
+      const parsed = JSON.parse(fs.readFileSync(devJson, 'utf-8'));
+      if (!process.env.ASAAS_API_KEY && parsed.ASAAS_API_KEY) {
+        process.env.ASAAS_API_KEY = parsed.ASAAS_API_KEY;
+      }
+      if (!process.env.ASAAS_WEBHOOK_TOKEN && parsed.ASAAS_WEBHOOK_TOKEN) {
+        process.env.ASAAS_WEBHOOK_TOKEN = parsed.ASAAS_WEBHOOK_TOKEN;
+      }
+    }
+  } catch {
+    // Ignore reading error
+  }
+
   const nodeEnv = (process.env.NODE_ENV || 'development').toLowerCase() as 'development' | 'production' | 'test';
   let dataMode = (process.env.DATA_MODE || '').toLowerCase() as 'supabase' | 'mock' | '';
 

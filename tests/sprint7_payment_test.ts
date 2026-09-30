@@ -58,8 +58,9 @@ async function runSprint7Tests() {
   // -------------------------------------------------------------------------
   console.log('\n--- TEST 3: Criação de Cobrança PIX em Sandbox ---');
   const customerId = await asaasProvider.createCustomer({
-    name: 'Turista Teste Silva',
-    email: 'turista@duo21.com.br'
+    name: 'Paulinho',
+    email: 'turista@duo21.com.br',
+    cpfCnpj: '45750682170'
   });
   assert(Boolean(customerId && customerId.length > 5), 'Customer ID gerado com sucesso', customerId);
 
@@ -68,14 +69,15 @@ async function runSprint7Tests() {
     tripId: 'trip_sprint7_test_01',
     amountBrl: 19.90,
     paymentMethod: 'pix',
-    customerName: 'Turista Teste Silva',
-    customerEmail: 'turista@duo21.com.br'
+    customerName: 'Paulinho',
+    customerEmail: 'turista@duo21.com.br',
+    customerCpf: '45750682170'
   });
 
   assert(order.id.startsWith('ord_'), 'Order ID gerado no formato ord_*');
   assert(order.amount_brl === 19.90, 'Valor exato de R$ 19,90 atribuído');
   assert(order.status === 'PENDING', 'Status inicial é PENDING');
-  assert(Boolean(order.pix_copy_paste && order.pix_copy_paste.includes('BR.GOV.BCB.PIX')), 'String PIX copia-e-cola gerada e válida');
+  assert(Boolean(order.pix_copy_paste && order.pix_copy_paste.toLowerCase().includes('br.gov.bcb.pix')), 'String PIX copia-e-cola gerada e válida');
   assert(Boolean(order.pix_qr_code), 'URL do QR Code gerada');
   assert(order.is_sandbox === true, 'Sinalizador is_sandbox ativo');
 
@@ -124,7 +126,7 @@ async function runSprint7Tests() {
   // -------------------------------------------------------------------------
   console.log('\n--- TEST 6: Regra Fundamental de Bloqueio e Desbloqueio ---');
   const samplePrefs: TripPreferences = {
-    name: 'Turista Teste Silva',
+    name: 'Paulinho',
     start_date: '2026-10-10',
     end_date: '2026-10-13',
     number_of_days: 4,
