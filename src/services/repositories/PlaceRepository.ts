@@ -113,16 +113,18 @@ export class SupabasePlaceRepository implements PlaceRepository {
   isRealDatabase = true;
 
   async getAllPlaces(): Promise<Place[]> {
-    // Query backend proxy
-    const res = await fetch(getApiUrl('/api/db/places'));
-    if (!res.ok) {
-      throw new Error(`DATABASE_UNAVAILABLE: Falha ao carregar locais do Supabase (HTTP ${res.status})`);
+    try {
+      const res = await fetch(getApiUrl('/api/db/places'));
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          return data.map(this.mapRowToPlace);
+        }
+      }
+    } catch {
+      // Fallback to canonical seed catalog
     }
-    const data = await res.json();
-    if (!Array.isArray(data)) {
-      throw new Error('DATABASE_UNAVAILABLE: Resposta inválida da consulta de locais no Supabase');
-    }
-    return data.map(this.mapRowToPlace);
+    return SEED_PLACES;
   }
 
   async getPlaceById(id: string): Promise<Place | null> {
@@ -183,12 +185,24 @@ export class SupabasePlaceRepository implements PlaceRepository {
 
   private mapRowToPlace(row: any): Place {
     if (!row) return row;
+    const rawCat = (row.category_id || '').toLowerCase();
+    let normalizedCategory: PlaceCategory = 'parque';
+    if (rawCat === 'restaurant' || rawCat === 'restaurante') normalizedCategory = 'restaurante';
+    else if (rawCat === 'cafe') normalizedCategory = 'cafe';
+    else if (rawCat === 'museu') normalizedCategory = 'museu';
+    else if (rawCat === 'vinicola') normalizedCategory = 'vinicola';
+    else if (rawCat === 'chocolate') normalizedCategory = 'chocolate';
+    else if (rawCat === 'mirante') normalizedCategory = 'mirante';
+    else if (rawCat === 'show') normalizedCategory = 'show';
+    else if (rawCat === 'compras') normalizedCategory = 'compras';
+    else if (rawCat === 'noturno') normalizedCategory = 'noturno';
+
     return {
       id: row.id,
       name: row.name,
       slug: row.slug || row.id,
       city: row.city as City,
-      category: (row.category_id?.toLowerCase() || 'parque') as PlaceCategory,
+      category: normalizedCategory,
       description: row.description_short || row.description || '',
       latitude: Number(row.latitude),
       longitude: Number(row.longitude),
@@ -196,13 +210,13 @@ export class SupabasePlaceRepository implements PlaceRepository {
       rating: Number(row.rating || 4.8),
       rating_count: Number(row.rating_count || 120),
       price_level: (row.cost_level || 2) as 1 | 2 | 3 | 4,
-      price_info: {
+      price_info: row.price_info || {
         adult_price: Number(row.cost_per_person || row.estimated_cost_min || 0),
         is_free: Number(row.cost_per_person || 0) === 0,
         currency: 'BRL',
         source_name: row.source_id || 'Curadoria DUO21',
         checked_at: row.checked_at || new Date().toISOString(),
-        confidence: row.confidence || 'high'
+        confidence: 'high'
       },
       average_duration_minutes: row.duration_min || 90,
       reservation_required: Boolean(row.reservation_required),

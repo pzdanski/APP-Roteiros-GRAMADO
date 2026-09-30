@@ -14,6 +14,9 @@ import { weatherServer } from './src/server/weather/WeatherServerProvider';
 import { asaasServerProvider } from './src/server/payment/AsaasServerProvider';
 import { PriceService } from './src/services/payment/PriceService';
 import { finalItineraryEngine } from './src/services/finalItineraryEngine';
+import { SEED_PLACES } from './src/data/seedData';
+import { DEFAULT_WEIGHTS } from './src/services/itineraryEngine';
+import { Place } from './src/types';
 import { rateLimitService } from './src/server/security/RateLimitService';
 import { singleFlight } from './src/server/cache/SingleFlight';
 import { structuredLoggerMiddleware, sanitizeLog } from './src/server/security/StructuredLogger';
@@ -190,6 +193,11 @@ async function startServer() {
 
     res.json({
       app: 'ok',
+      build_sha: process.env.APP_BUILD_SHA || process.env.SHORT_SHA || process.env.COMMIT_SHA || 'hotfix-8.3',
+      app_build_sha: process.env.APP_BUILD_SHA || 'hotfix-8.3',
+      version: '8.3.0',
+      cloud_run_revision: process.env.K_REVISION || 'local-dev',
+      cloud_run_service: process.env.K_SERVICE || 'duo21-roteiro',
       service: 'DUO21 Roteiro Serra Gaúcha Backend',
       canonical_domain: env.APP_PUBLIC_URL,
       public_origin: env.PUBLIC_APP_ORIGIN,
@@ -741,6 +749,113 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
     lastResult: 'SUCCESS'
   };
 
+  async function generateValidatedFinalTrip(prefs: any, targetTripId: string, existingTrip?: any): Promise<any> {
+    let catalogPlaces: Place[] = [];
+    try {
+      const rawPlaces = await supabaseServer.getPlaces();
+      if (rawPlaces && rawPlaces.length > 0) {
+        catalogPlaces = rawPlaces.map(r => ({
+          id: r.id,
+          name: r.name,
+          slug: r.slug || r.id,
+          city: r.city,
+          category: (r.category_id?.toLowerCase() === 'restaurant' ? 'restaurante' : (r.category_id?.toLowerCase() || 'parque')) as any,
+          description: r.description_short || r.description || '',
+          latitude: Number(r.latitude),
+          longitude: Number(r.longitude),
+          address: r.address || `${r.city} - RS`,
+          rating: Number(r.rating || 4.8),
+          rating_count: Number(r.rating_count || 120),
+          price_level: (r.cost_level || 2) as any,
+          price_info: {
+            adult_price: Number(r.cost_per_person || r.estimated_cost_min || 0),
+            is_free: Number(r.cost_per_person || 0) === 0,
+            currency: 'BRL',
+            source_name: r.source_id || 'Curadoria DUO21',
+            checked_at: r.checked_at || new Date().toISOString(),
+            confidence: 'high' as const
+          },
+          average_duration_minutes: r.duration_min || 90,
+          reservation_required: Boolean(r.reservation_required),
+          accessible: Boolean(r.accessibility ?? true),
+          pet_friendly: Boolean(r.pet_friendly),
+          children_friendly: Boolean(r.suitable_for_children ?? true),
+          indoor_type: (r.indoor_outdoor || 'outdoor') as any,
+          opening_hours: r.opening_hours || { 'seg': '09:00 - 18:00' },
+          media: [{ url: r.media_url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80', is_hero: true }],
+          is_divulga_lugares_partner: Boolean(r.partner || r.divulga_lugares_recommended),
+          active: Boolean(r.active ?? true),
+          is_demo: Boolean(r.is_demo ?? true),
+          created_at: r.created_at || new Date().toISOString(),
+          updated_at: r.updated_at || new Date().toISOString()
+        }));
+      }
+    } catch (err) {
+      console.warn('[DUO21 Server] Could not fetch places from Supabase:', err);
+    }
+
+    if (catalogPlaces.length === 0) {
+      if (env.NODE_ENV === 'production' && env.DATA_MODE === 'supabase') {
+        console.error(`[DUO21 Security] Production Supabase catalog returned 0 places. Aborting generation for trip ${targetTripId} to prevent false itinerary.`);
+        const unreadyTrip = {
+          id: targetTripId,
+          secure_token: existingTrip?.secure_token || TripAccessService.generateSecureToken(),
+          status: 'generation_failed',
+          preferences: prefs,
+          days: [],
+          created_at: new Date().toISOString(),
+          error: 'DATABASE_CATALOG_UNAVAILABLE: O catálogo de produção do Supabase está vazio ou inacessível.'
+        };
+        tripsDatabase.set(targetTripId, unreadyTrip);
+        throw new Error('DATABASE_CATALOG_UNAVAILABLE: Catálogo de produção do Supabase indisponível. Geração bloqueada para evitar dados falsos.');
+      } else {
+        catalogPlaces = SEED_PLACES;
+      }
+    }
+
+    // Execution of FinalItineraryEngine AFTER valid payment confirmation
+    const finalTrip = finalItineraryEngine.generateFinalItinerary(prefs, 'payment', DEFAULT_WEIGHTS, catalogPlaces);
+    finalTrip.id = targetTripId;
+    finalTrip.paid_at = new Date().toISOString();
+    if (existingTrip?.secure_token) {
+      finalTrip.secure_token = existingTrip.secure_token;
+    } else if (!finalTrip.secure_token) {
+      finalTrip.secure_token = TripAccessService.generateSecureToken();
+    }
+
+    // HOTFIX 8.3 Section 7: Mandatory Invariant before marking READY
+    let expectedDays = 1;
+    if (prefs.start_date && prefs.end_date) {
+      const start = new Date(prefs.start_date);
+      const end = new Date(prefs.end_date);
+      const diffDays = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+      if (diffDays > 0) expectedDays = diffDays;
+    }
+
+    const generatedDays = finalTrip.days?.length || 0;
+    const totalActivities = (finalTrip.days || []).reduce((acc: number, d: any) => acc + (d.activities?.length || 0), 0);
+    const allRequiredDaysHaveActivities = generatedDays > 0 && finalTrip.days.every((d: any) => (d.activities?.length || 0) >= 1);
+    const meetsExpectedDays = generatedDays >= expectedDays;
+
+    if (meetsExpectedDays && totalActivities > 0 && allRequiredDaysHaveActivities) {
+      finalTrip.status = 'ready';
+    } else {
+      console.error(`[DUO21 Security] Consistency check FAILED for trip ${targetTripId}: days=${generatedDays}/${expectedDays}, activities=${totalActivities}`);
+      finalTrip.status = 'generation_failed' as any;
+      throw new Error(`Inconsistent itinerary generation: ${generatedDays}/${expectedDays} days, ${totalActivities} activities. Status set to generation_failed.`);
+    }
+
+    tripsDatabase.set(targetTripId, finalTrip);
+
+    try {
+      await supabaseServer.saveTrip(finalTrip);
+    } catch (err) {
+      console.warn('[DUO21 Server] Supabase saveTrip failed (kept safely in active memory):', err);
+    }
+
+    return finalTrip;
+  }
+
   const handleWebhook = async (req: express.Request, res: express.Response) => {
     const eventId = (req.headers['asaas-event-id'] as string) || req.body?.id || req.body?.payment?.id;
 
@@ -814,9 +929,12 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
       if (targetTripId) {
         unlockedTrip = await singleFlight.do(`generate:${targetTripId}`, async () => {
           const existingTrip = tripsDatabase.get(targetTripId);
-          // If already generated and ready, do NOT generate twice (Sprint 8B - Requirement 11)
+          // If already generated and ready with activities, do NOT generate twice (Sprint 8B - Requirement 11)
           if (existingTrip && existingTrip.status === 'ready' && existingTrip.days?.length > 0) {
-            return existingTrip;
+            const hasActivities = existingTrip.days.every((d: any) => (d.activities?.length || 0) > 0);
+            if (hasActivities) {
+              return existingTrip;
+            }
           }
 
           const prefs = existingTrip?.preferences || targetOrder?.preferences || {
@@ -833,18 +951,7 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
             restrictions: []
           };
 
-          // Execution of FinalItineraryEngine AFTER valid payment confirmation
-          const finalTrip = finalItineraryEngine.generateFinalItinerary(prefs, 'payment');
-          finalTrip.id = targetTripId;
-          finalTrip.status = 'ready';
-          finalTrip.paid_at = new Date().toISOString();
-          if (existingTrip?.secure_token) {
-            finalTrip.secure_token = existingTrip.secure_token;
-          } else if (!finalTrip.secure_token) {
-            finalTrip.secure_token = TripAccessService.generateSecureToken();
-          }
-
-          tripsDatabase.set(targetTripId, finalTrip);
+          const finalTrip = await generateValidatedFinalTrip(prefs, targetTripId, existingTrip);
 
           // Audit Log: ITINERARY_GENERATED
           paymentEvents.push({
@@ -853,17 +960,12 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
             payload: {
               tripId: targetTripId,
               daysCount: finalTrip.days?.length || 0,
+              activitiesCount: (finalTrip.days || []).reduce((acc: number, d: any) => acc + (d.activities?.length || 0), 0),
               status: finalTrip.status,
               paidAt: finalTrip.paid_at
             },
             created_at: new Date().toISOString()
           });
-
-          try {
-            await supabaseServer.saveTrip(finalTrip);
-          } catch {
-            // Fallback to memory
-          }
 
           return finalTrip;
         });
@@ -966,17 +1068,7 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
       restrictions: []
     };
 
-    const unlockedTrip = finalItineraryEngine.generateFinalItinerary(prefs, 'payment');
-    unlockedTrip.id = targetTripId;
-    unlockedTrip.status = 'ready';
-    unlockedTrip.paid_at = new Date().toISOString();
-    if (existingTrip?.secure_token) {
-      unlockedTrip.secure_token = existingTrip.secure_token;
-    } else if (!unlockedTrip.secure_token) {
-      unlockedTrip.secure_token = TripAccessService.generateSecureToken();
-    }
-
-    tripsDatabase.set(targetTripId, unlockedTrip);
+    const unlockedTrip = await generateValidatedFinalTrip(prefs, targetTripId, existingTrip);
 
     res.json({
       success: true,
@@ -1023,7 +1115,7 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
             created_at: new Date().toISOString()
           });
 
-          if (targetTripId && (!trip || trip.status !== 'ready')) {
+          if (targetTripId && (!trip || trip.status !== 'ready' || !trip.days?.every((d: any) => (d.activities?.length || 0) > 0))) {
             const existingTrip = tripsDatabase.get(targetTripId);
             const prefs = existingTrip?.preferences || order.preferences || {
               name: order.customer_name || 'Viajante',
@@ -1039,31 +1131,20 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
               restrictions: []
             };
 
-            const unlockedTrip = finalItineraryEngine.generateFinalItinerary(prefs, 'payment');
-            unlockedTrip.id = targetTripId;
-            unlockedTrip.status = 'ready';
-            unlockedTrip.paid_at = new Date().toISOString();
-            if (existingTrip?.secure_token) {
-              unlockedTrip.secure_token = existingTrip.secure_token;
-            } else if (!unlockedTrip.secure_token) {
-              unlockedTrip.secure_token = TripAccessService.generateSecureToken();
-            }
-
-            tripsDatabase.set(targetTripId, unlockedTrip);
+            const unlockedTrip = await generateValidatedFinalTrip(prefs, targetTripId, existingTrip);
             trip = unlockedTrip;
 
             paymentEvents.push({
               id: `evt_itin_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
               type: 'ITINERARY_GENERATED',
-              payload: { tripId: targetTripId, daysCount: unlockedTrip.days?.length || 0 },
+              payload: {
+                tripId: targetTripId,
+                daysCount: unlockedTrip.days?.length || 0,
+                activitiesCount: (unlockedTrip.days || []).reduce((acc: number, d: any) => acc + (d.activities?.length || 0), 0),
+                status: unlockedTrip.status
+              },
               created_at: new Date().toISOString()
             });
-
-            try {
-              await supabaseServer.saveTrip(unlockedTrip);
-            } catch {
-              // fallback
-            }
           }
         }
       } catch (err) {
@@ -1071,19 +1152,40 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
       }
     }
 
+    const isTripValidAndReady = Boolean(
+      trip &&
+      trip.status === 'ready' &&
+      Array.isArray(trip.days) &&
+      trip.days.length > 0 &&
+      trip.days.every((d: any) => Array.isArray(d.activities) && d.activities.length > 0)
+    );
+
+    let effectiveTripStatus = 'preview';
+    if (order?.status === 'PAID') {
+      if (isTripValidAndReady) {
+        effectiveTripStatus = 'ready';
+      } else if (trip?.status === 'generation_failed') {
+        effectiveTripStatus = 'generation_failed';
+      } else {
+        effectiveTripStatus = 'generating';
+      }
+    } else if (trip?.status) {
+      effectiveTripStatus = trip.status;
+    }
+
     if (order) {
       res.json({
         ...order,
-        trip_status: trip?.status || (order.status === 'PAID' ? 'ready' : 'preview'),
+        trip_status: effectiveTripStatus,
         secure_token: trip?.secure_token,
-        trip: trip?.status === 'ready' ? trip : null
+        trip: isTripValidAndReady ? trip : null
       });
     } else {
       res.json({
         status: 'PENDING',
         id: orderId || '',
-        trip_status: trip?.status || 'preview',
-        trip: trip?.status === 'ready' ? trip : null
+        trip_status: isTripValidAndReady ? 'ready' : (trip?.status || 'preview'),
+        trip: isTripValidAndReady ? trip : null
       });
     }
   };
@@ -1091,18 +1193,63 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
   app.get('/api/payments/status', handleStatusCheck);
   app.get('/api/payment/status', handleStatusCheck);
 
-  app.get('/api/payments/trip-status/:tripId', (req, res) => {
-    const trip = tripsDatabase.get(req.params.tripId);
+  app.get('/api/payments/trip-status/:tripId', async (req, res) => {
+    let trip = tripsDatabase.get(req.params.tripId);
+    if (!trip) {
+      for (const t of tripsDatabase.values()) {
+        if (t.secure_token === req.params.tripId) {
+          trip = t;
+          break;
+        }
+      }
+    }
     if (!trip) {
       res.status(404).json({ error: 'Viagem não encontrada' });
       return;
     }
+
+    const hasActivities = Boolean(
+      trip.days && 
+      trip.days.length > 0 && 
+      trip.days.every((d: any) => Array.isArray(d.activities) && d.activities.length > 0)
+    );
+
+    if (!hasActivities && (trip.status === 'ready' || trip.status === 'paid')) {
+      try {
+        const prefs = trip.preferences || {
+          name: 'Viajante',
+          start_date: new Date().toISOString().split('T')[0],
+          end_date: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
+          adults_count: 2,
+          children_count: 0,
+          children_ages: [],
+          pace: 'equilibrado' as const,
+          transport: 'carro_alugado' as const,
+          interests: ['Gastronomia', 'Natureza'],
+          mandatory_places: [],
+          restrictions: []
+        };
+        const healedTrip = await generateValidatedFinalTrip(prefs, trip.id, trip);
+        trip = healedTrip;
+      } catch (healErr) {
+        console.error(`[DUO21 Healing] Failed to regenerate empty trip ${trip.id}:`, healErr);
+      }
+    }
+
+    const isTripValidAndReady = Boolean(
+      trip &&
+      trip.status === 'ready' &&
+      Array.isArray(trip.days) &&
+      trip.days.length > 0 &&
+      trip.days.every((d: any) => Array.isArray(d.activities) && d.activities.length > 0)
+    );
+
     res.json({
       tripId: trip.id,
-      status: trip.status,
+      status: isTripValidAndReady ? 'ready' : (trip.status === 'ready' ? 'generation_failed' : trip.status),
       isPaid: trip.status === 'ready' || trip.status === 'paid',
       secureToken: trip.secure_token,
-      trip: trip.status === 'ready' ? trip : null
+      trip: isTripValidAndReady ? trip : null
     });
   });
 
@@ -1343,13 +1490,81 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
     }
 
     try {
-      const trip = await supabaseServer.getTripByToken(token);
+      let trip = await supabaseServer.getTripByToken(token);
+      if (!trip) {
+        for (const t of tripsDatabase.values()) {
+          if (t.secure_token === token) {
+            trip = t;
+            break;
+          }
+        }
+      }
       if (!trip) {
         res.status(404).json({ code: 'TRIP_NOT_FOUND', error: 'Viagem não encontrada para o token informado.' });
         return;
       }
+
+      const hasActivities = Boolean(
+        trip.days && 
+        trip.days.length > 0 && 
+        trip.days.every((d: any) => Array.isArray(d.activities) && d.activities.length > 0)
+      );
+
+      if (!hasActivities && (trip.status === 'ready' || trip.status === 'paid')) {
+        try {
+          const prefs = trip.preferences || {
+            name: 'Viajante',
+            start_date: new Date().toISOString().split('T')[0],
+            end_date: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
+            adults_count: 2,
+            children_count: 0,
+            children_ages: [],
+            pace: 'equilibrado' as const,
+            transport: 'carro_alugado' as const,
+            interests: ['Gastronomia', 'Natureza'],
+            mandatory_places: [],
+            restrictions: []
+          };
+          const healed = await generateValidatedFinalTrip(prefs, trip.id, trip);
+          trip = healed;
+        } catch (healErr) {
+          console.error(`[DUO21 Healing] Failed to regenerate empty trip ${trip.id}:`, healErr);
+        }
+      }
+
       res.json(trip);
     } catch (err: any) {
+      for (const t of tripsDatabase.values()) {
+        if (t.secure_token === token) {
+          let tripToSend = t;
+          const hasActivities = Boolean(
+            tripToSend.days && 
+            tripToSend.days.length > 0 && 
+            tripToSend.days.every((d: any) => Array.isArray(d.activities) && d.activities.length > 0)
+          );
+          if (!hasActivities && (tripToSend.status === 'ready' || tripToSend.status === 'paid')) {
+            try {
+              const prefs = tripToSend.preferences || {
+                name: 'Viajante',
+                start_date: new Date().toISOString().split('T')[0],
+                end_date: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
+                adults_count: 2,
+                children_count: 0,
+                children_ages: [],
+                pace: 'equilibrado' as const,
+                transport: 'carro_alugado' as const,
+                interests: ['Gastronomia', 'Natureza'],
+                mandatory_places: [],
+                restrictions: []
+              };
+              const healed = await generateValidatedFinalTrip(prefs, tripToSend.id, tripToSend);
+              tripToSend = healed;
+            } catch {}
+          }
+          res.json(tripToSend);
+          return;
+        }
+      }
       res.status(503).json({ code: 'DATABASE_UNAVAILABLE', error: err.message });
     }
   });

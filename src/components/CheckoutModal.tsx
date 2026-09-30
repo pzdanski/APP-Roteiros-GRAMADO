@@ -61,12 +61,17 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
       try {
         const order = await paymentProvider.checkOrderStatus(currentOrderId);
         if (order.status === 'PAID' || order.status === 'paid') {
-          setIsPaid(true);
-          clearInterval(pollIntervalRef.current);
-          trackEvent('payment_completed', { tripId, orderId: currentOrderId });
-          setTimeout(() => {
-            onPaymentSuccess(secureToken, customerEmail);
-          }, 600);
+          const tripStatus = (order as any).trip_status;
+          // Only transition to unlocked if trip is confirmed READY (has activities)
+          if (tripStatus === 'ready' || !tripStatus) {
+            setIsPaid(true);
+            if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+            trackEvent('payment_completed', { tripId, orderId: currentOrderId });
+            const tokenToUse = (order as any).secure_token || (order as any).trip?.secure_token || secureToken;
+            setTimeout(() => {
+              onPaymentSuccess(tokenToUse, customerEmail);
+            }, 600);
+          }
         }
       } catch {
         // Continue polling

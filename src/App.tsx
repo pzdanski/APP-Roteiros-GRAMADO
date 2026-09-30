@@ -91,10 +91,20 @@ export default function App() {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsedTrip: Trip = JSON.parse(saved);
-        setTrip(parsedTrip);
-        if (parsedTrip.status === 'paid') {
+        const hasActivities = Boolean(
+          parsedTrip.days && 
+          parsedTrip.days.length > 0 && 
+          parsedTrip.days.every(d => d.activities && d.activities.length > 0)
+        );
+        let validTrip = parsedTrip;
+        if (!hasActivities && (parsedTrip.status === 'paid' || parsedTrip.status === 'ready')) {
+          validTrip = finalItineraryEngine.generateFinalItinerary(parsedTrip.preferences, 'payment');
+          validTrip.secure_token = parsedTrip.secure_token;
+        }
+        setTrip(validTrip);
+        if (validTrip.status === 'paid' || validTrip.status === 'ready') {
           setCurrentScreen('unlocked');
-        } else if (parsedTrip.status === 'preview') {
+        } else if (validTrip.status === 'preview') {
           setCurrentScreen('preview');
         }
       }
@@ -232,7 +242,14 @@ export default function App() {
       }
     }
 
-    if (!unlockedTrip) {
+    const hasActivities = Boolean(
+      unlockedTrip && 
+      unlockedTrip.days && 
+      unlockedTrip.days.length > 0 && 
+      unlockedTrip.days.every(d => d.activities && d.activities.length > 0)
+    );
+
+    if (!unlockedTrip || !hasActivities) {
       const prefs = pendingPreferences || preview?.preferences || trip?.preferences || {
         name: 'Viajante',
         start_date: new Date().toISOString().split('T')[0],
@@ -271,12 +288,35 @@ export default function App() {
   };
 
   // 5. Trip Recovery
-  const handleRecoverTrip = (tokenOrEmail: string) => {
+  const handleRecoverTrip = async (tokenOrEmail: string) => {
     // If it's a demo or matches current
     if (trip && (trip.secure_token === tokenOrEmail || trip.preferences.name?.toLowerCase() === tokenOrEmail.toLowerCase())) {
       setIsRecoveryOpen(false);
-      setCurrentScreen(trip.status === 'paid' ? 'unlocked' : 'preview');
+      setCurrentScreen(trip.status === 'paid' || trip.status === 'ready' ? 'unlocked' : 'preview');
       return;
+    }
+
+    try {
+      const res = await fetch(`/api/db/trips/token/${encodeURIComponent(tokenOrEmail)}`);
+      if (res.ok) {
+        const fetchedTrip: Trip = await res.json();
+        const hasActivities = Boolean(
+          fetchedTrip.days && 
+          fetchedTrip.days.length > 0 && 
+          fetchedTrip.days.every(d => d.activities && d.activities.length > 0)
+        );
+        let finalToSet = fetchedTrip;
+        if (!hasActivities && (fetchedTrip.status === 'ready' || fetchedTrip.status === 'paid')) {
+          finalToSet = finalItineraryEngine.generateFinalItinerary(fetchedTrip.preferences, 'payment');
+          finalToSet.secure_token = fetchedTrip.secure_token;
+        }
+        setTrip(finalToSet);
+        setIsRecoveryOpen(false);
+        setCurrentScreen(finalToSet.status === 'ready' || finalToSet.status === 'paid' ? 'unlocked' : 'preview');
+        return;
+      }
+    } catch {
+      // ignore and fallback
     }
 
     // Default sample recovered trip

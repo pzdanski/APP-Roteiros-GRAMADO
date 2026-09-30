@@ -29,49 +29,57 @@ ALTER TABLE public.user_reports ENABLE ROW LEVEL SECURITY;
 
 -- 2. PUBLIC CATALOG READ POLICIES (Anon / Authenticated)
 -- Turistas podem consultar locais ativos, categorias, tags, horários e preços de referência
+DROP POLICY IF EXISTS "Public read active places" ON public.places;
 CREATE POLICY "Public read active places"
     ON public.places FOR SELECT
     USING (active = true);
 
+DROP POLICY IF EXISTS "Public read place categories" ON public.place_categories;
 CREATE POLICY "Public read place categories"
     ON public.place_categories FOR SELECT
     USING (active = true);
 
+DROP POLICY IF EXISTS "Public read place tags" ON public.place_tags;
 CREATE POLICY "Public read place tags"
     ON public.place_tags FOR SELECT
     USING (true);
 
+DROP POLICY IF EXISTS "Public read place tag relations" ON public.place_tag_relations;
 CREATE POLICY "Public read place tag relations"
     ON public.place_tag_relations FOR SELECT
     USING (true);
 
+DROP POLICY IF EXISTS "Public read place hours" ON public.place_hours;
 CREATE POLICY "Public read place hours"
     ON public.place_hours FOR SELECT
     USING (true);
 
+DROP POLICY IF EXISTS "Public read price observations" ON public.price_observations;
 CREATE POLICY "Public read price observations"
     ON public.price_observations FOR SELECT
     USING (true);
 
+DROP POLICY IF EXISTS "Public read data sources" ON public.data_sources;
 CREATE POLICY "Public read data sources"
     ON public.data_sources FOR SELECT
     USING (active = true);
 
+DROP POLICY IF EXISTS "Public read events" ON public.events;
 CREATE POLICY "Public read events"
     ON public.events FOR SELECT
     USING (active = true);
 
 -- 3. TRIP READ POLICIES (Proteção de privacidade: Apenas por secure_token ou service_role)
 -- O cliente só consegue consultar ou carregar uma viagem se fornecer o secure_token correto
+DROP POLICY IF EXISTS "Trips accessible by secure token" ON public.trips;
 CREATE POLICY "Trips accessible by secure token"
     ON public.trips FOR SELECT
     USING (
-        -- Permitir se o header da requisição ou parâmetro fornecer o secure_token
         current_setting('request.headers', true)::json->>'x-trip-token' = secure_token
         OR auth.role() = 'service_role'
-        OR auth.role() = 'authenticated'
     );
 
+DROP POLICY IF EXISTS "Trip profiles accessible via matching trip" ON public.trip_profiles;
 CREATE POLICY "Trip profiles accessible via matching trip"
     ON public.trip_profiles FOR SELECT
     USING (
@@ -82,6 +90,7 @@ CREATE POLICY "Trip profiles accessible via matching trip"
         )
     );
 
+DROP POLICY IF EXISTS "Trip days accessible via matching trip" ON public.trip_days;
 CREATE POLICY "Trip days accessible via matching trip"
     ON public.trip_days FOR SELECT
     USING (
@@ -92,6 +101,7 @@ CREATE POLICY "Trip days accessible via matching trip"
         )
     );
 
+DROP POLICY IF EXISTS "Trip activities accessible via matching trip" ON public.trip_activities;
 CREATE POLICY "Trip activities accessible via matching trip"
     ON public.trip_activities FOR SELECT
     USING (
@@ -103,6 +113,7 @@ CREATE POLICY "Trip activities accessible via matching trip"
         )
     );
 
+DROP POLICY IF EXISTS "Trip previews accessible via matching trip" ON public.trip_previews;
 CREATE POLICY "Trip previews accessible via matching trip"
     ON public.trip_previews FOR SELECT
     USING (
@@ -113,6 +124,7 @@ CREATE POLICY "Trip previews accessible via matching trip"
         )
     );
 
+DROP POLICY IF EXISTS "Trip usage accessible via matching trip" ON public.trip_usage;
 CREATE POLICY "Trip usage accessible via matching trip"
     ON public.trip_usage FOR SELECT
     USING (
@@ -125,38 +137,46 @@ CREATE POLICY "Trip usage accessible via matching trip"
 
 -- 4. INSERT/UPDATE POLICIES FOR TRIPS
 -- Criação de novas viagens pelo fluxo da Landing/Briefing
+DROP POLICY IF EXISTS "Public insert draft trips" ON public.trips;
 CREATE POLICY "Public insert draft trips"
     ON public.trips FOR INSERT
     WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public insert trip profiles" ON public.trip_profiles;
 CREATE POLICY "Public insert trip profiles"
     ON public.trip_profiles FOR INSERT
     WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public insert trip previews" ON public.trip_previews;
 CREATE POLICY "Public insert trip previews"
     ON public.trip_previews FOR INSERT
     WITH CHECK (true);
 
 -- 5. USER REPORTS POLICY
 -- Turistas podem submeter report de erro sobre qualquer local, mas não podem listar outros reports
+DROP POLICY IF EXISTS "Anyone can insert user report" ON public.user_reports;
 CREATE POLICY "Anyone can insert user report"
     ON public.user_reports FOR INSERT
     WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Only admin and service role can view reports" ON public.user_reports;
 CREATE POLICY "Only admin and service role can view reports"
     ON public.user_reports FOR SELECT
     USING (auth.role() = 'service_role');
 
 -- 6. STRICT RESTRICTION POLICIES (Payments, API Usage, Cache)
 -- Somente o backend com service_role pode ler ou manipular pagamentos e custos de API
+DROP POLICY IF EXISTS "Service role only for payments" ON public.payments;
 CREATE POLICY "Service role only for payments"
     ON public.payments FOR ALL
     USING (auth.role() = 'service_role');
 
+DROP POLICY IF EXISTS "Service role only for api_usage" ON public.api_usage;
 CREATE POLICY "Service role only for api_usage"
     ON public.api_usage FOR ALL
     USING (auth.role() = 'service_role');
 
+DROP POLICY IF EXISTS "Service role only for cache" ON public.external_data_cache;
 CREATE POLICY "Service role only for cache"
     ON public.external_data_cache FOR ALL
     USING (auth.role() = 'service_role');

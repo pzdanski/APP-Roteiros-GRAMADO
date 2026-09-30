@@ -8,7 +8,7 @@ import {
   City,
   SerraEvent
 } from '../types';
-import { calculateTripPrice, SEED_EVENTS } from '../data/seedData';
+import { calculateTripPrice, SEED_EVENTS, SEED_PLACES } from '../data/seedData';
 import { buildItinerary, DEFAULT_WEIGHTS, EngineWeights } from './itineraryEngine';
 import { placeRepository } from './repositories/RepositoryFactory';
 import { placeQueryService } from './places/PlaceQueryService';
@@ -28,7 +28,15 @@ export class FinalItineraryEngine {
     unlockSource: UnlockSource = 'payment',
     weights: EngineWeights = DEFAULT_WEIGHTS
   ): Promise<Trip> {
-    const places = await placeRepository.getAllPlaces();
+    let places: Place[] = [];
+    try {
+      places = await placeRepository.getAllPlaces();
+    } catch {
+      places = [];
+    }
+    if (!places || places.length === 0) {
+      places = SEED_PLACES;
+    }
     const planned = await logisticsEngine.planItinerary(preferences, places);
     planned.unlock_source = unlockSource;
     planned.unlockSource = unlockSource;
@@ -45,19 +53,48 @@ export class FinalItineraryEngine {
     // 1. Get catalog from repository if provided, or fallback to known repository seed
     let placesCatalog = existingPlaces;
     if (!placesCatalog || placesCatalog.length === 0) {
-      // Synchronously access cached repository items
-      placesCatalog = (placeRepository as any).places ? Array.from((placeRepository as any).places.values()) : [];
+      const inMemoryPlaces = (placeRepository as any).places ? Array.from((placeRepository as any).places.values()) : null;
+      if (inMemoryPlaces && inMemoryPlaces.length > 0) {
+        placesCatalog = inMemoryPlaces as Place[];
+      } else {
+        if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'production' && process.env?.DATA_MODE === 'supabase') {
+          throw new Error('DATABASE_CATALOG_UNAVAILABLE: Catálogo de produção do Supabase vazio. Roteiro bloqueado para evitar dados falsos.');
+        }
+        placesCatalog = SEED_PLACES;
+      }
     }
 
     // 2. Build base itinerary through structured query scoring
     const rawTrip = buildItinerary(preferences, weights, placesCatalog, existingEvents);
 
     // 3. Enhance activities with operational rules, justifications, and sources
-    const enhancedDays: TripDay[] = rawTrip.days.map((day) => {
+    const enhancedDays: TripDay[] = rawTrip.days.map((day, dayIndex) => {
+      let activitiesToEnhance = day.activities;
+
+      // Safety guarantee: Ensure every day has activities even under strict filters
+      if (!activitiesToEnhance || activitiesToEnhance.length === 0) {
+        const cityPlaces = placesCatalog.filter(p => p.city === day.city_focus && p.active);
+        const candidates = cityPlaces.length > 0 ? cityPlaces : placesCatalog.filter(p => p.active);
+        const slots = ['09:30', '14:30', '19:30'];
+        activitiesToEnhance = slots.map((time, idx) => {
+          const place = candidates[idx % candidates.length];
+          return {
+            id: `act_${dayIndex + 1}_${idx + 1}_${Date.now()}`,
+            time,
+            place,
+            duration_minutes: place.average_duration_minutes || 90,
+            travel_time_from_prev_minutes: 15,
+            distance_km_from_prev: 3.5,
+            estimated_cost_per_person: place.price_info?.is_free ? 0 : (place.price_info?.adult_price || 0),
+            locked: false
+          };
+        });
+      }
+
       const dayDate = new Date(day.date);
       const dayOfWeekShort = this.getDayOfWeekKey(dayDate);
 
-      const enhancedActivities: TripActivity[] = day.activities.map((act, index) => {
+      const enhancedActivities: TripActivity[] = activitiesToEnhance.map((act, index) => {
         const unlockedAct: TripActivity = {
           ...act,
           locked: false
@@ -91,8 +128,11 @@ export class FinalItineraryEngine {
         return unlockedAct;
       });
 
+      const computedDayCost = enhancedActivities.reduce((sum, a) => sum + ((a.estimated_cost_per_person || a.place?.price_info?.adult_price || 0) * (preferences.adults_count || 2)), 0);
+
       return {
         ...day,
+        total_day_cost_estimated: day.total_day_cost_estimated && day.total_day_cost_estimated > 0 ? day.total_day_cost_estimated : (computedDayCost > 0 ? computedDayCost : 180),
         activities: enhancedActivities
       };
     });

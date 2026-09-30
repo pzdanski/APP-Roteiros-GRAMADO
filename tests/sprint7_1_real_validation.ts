@@ -217,7 +217,8 @@ async function runValidation() {
   console.log(`Is Paid: ${tripStatusData.isPaid}`);
   console.log(`Secure Trip Token: ${tripStatusData.secureToken}`);
   console.log(`Dias de Roteiro Detalhado Gerados: ${tripStatusData.trip?.days?.length || 0} dias`);
-  console.log(`Primeiro dia: Manhã: "${tripStatusData.trip?.days?.[0]?.morning?.title}", Tarde: "${tripStatusData.trip?.days?.[0]?.afternoon?.title}", Noite: "${tripStatusData.trip?.days?.[0]?.night?.title}"`);
+  const firstDayActs = tripStatusData.trip?.days?.[0]?.activities || [];
+  console.log(`Primeiro dia (${firstDayActs.length} atividades): ${firstDayActs.map((a: any) => `${a.time} ${a.place?.name}`).join(' | ')}`);
 
   // ---------------------------------------------------------------------------
   // 14. WEBHOOK DUPLICADO (Idempotência)

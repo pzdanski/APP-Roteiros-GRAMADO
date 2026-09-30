@@ -1,6 +1,119 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import crypto from 'crypto';
 import { validateServerEnv, ValidatedEnv } from './envValidator';
 import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
+
+export function toDeterministicUuid(id: string): string {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (uuidRegex.test(id)) return id;
+  const hash = crypto.createHash('md5').update(id).digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
+
+export const PLACE_UUID_MAP: Record<string, string> = {
+  'lago-negro': 'a0000001-0000-0000-0000-000000000001',
+  'plc-gra-01': 'a0000001-0000-0000-0000-000000000001',
+  'mini-mundo': 'a0000001-0000-0000-0000-000000000002',
+  'plc-gra-02': 'a0000001-0000-0000-0000-000000000002',
+  'snowland-gramado': 'a0000001-0000-0000-0000-000000000003',
+  'plc-gra-03': 'a0000001-0000-0000-0000-000000000003',
+  'olivas-de-gramado': 'a0000001-0000-0000-0000-000000000004',
+  'plc-gra-06': 'a0000001-0000-0000-0000-000000000004',
+  'praca-das-etnias': 'a0000001-0000-0000-0000-000000000005',
+  'rua-torta-praca-etnias': 'a0000001-0000-0000-0000-000000000005',
+  'plc-gra-04': 'a0000001-0000-0000-0000-000000000005',
+  'mirante-vale-do-quilombo': 'a0000001-0000-0000-0000-000000000006',
+  'bondinhos-aereos-canela': 'a0000001-0000-0000-0000-000000000007',
+  'parque-do-caracol': 'a0000001-0000-0000-0000-000000000008',
+  'plc-can-02': 'a0000001-0000-0000-0000-000000000008',
+  'mundo-a-vapor': 'a0000001-0000-0000-0000-000000000009',
+  'catedral-de-pedra': 'a0000001-0000-0000-0000-000000000010',
+  'plc-can-01': 'a0000001-0000-0000-0000-000000000010',
+  'labirinto-verde': 'a0000001-0000-0000-0000-000000000011',
+  'plc-nvp-01': 'a0000001-0000-0000-0000-000000000011',
+  'aldeia-do-imigrante': 'a0000001-0000-0000-0000-000000000012',
+  'plc-nvp-02': 'a0000001-0000-0000-0000-000000000012',
+  'parque-da-ferradura': 'a0000001-0000-0000-0000-000000000013',
+  'belle-du-valais': 'b0000001-0000-0000-0000-000000000001',
+  'restaurante-colosseo': 'b0000001-0000-0000-0000-000000000002',
+  'restaurante-colosseo-fondue': 'b0000001-0000-0000-0000-000000000002',
+  'plc-gra-colosseo-fondue': 'b0000001-0000-0000-0000-000000000002',
+  'galeto-di-paolo': 'b0000001-0000-0000-0000-000000000003',
+  'cantina-pastasciutta': 'b0000001-0000-0000-0000-000000000004',
+  'plc-gra-05': 'b0000001-0000-0000-0000-000000000004',
+  'casa-da-velha-bruxa': 'b0000001-0000-0000-0000-000000000005',
+  'magnolia-canela': 'b0000001-0000-0000-0000-000000000006',
+  'toro-gramado': 'b0000001-0000-0000-0000-000000000007',
+  'prawer-chocolates': 'b0000001-0000-0000-0000-000000000008',
+  'restaurante-opalma': 'b0000001-0000-0000-0000-000000000009',
+  'skyglass-canela': 'a0000001-0000-0000-0000-000000000007',
+  'plc-can-03': 'a0000001-0000-0000-0000-000000000007',
+  'alpen-park': 'a0000001-0000-0000-0000-000000000009',
+  'plc-can-04': 'a0000001-0000-0000-0000-000000000009',
+  'ninho-das-aguias': 'a0000001-0000-0000-0000-000000000011',
+  'plc-nvp-03': 'a0000001-0000-0000-0000-000000000011',
+  'hotel-casa-da-montanha': 'c0000001-0000-0000-0000-000000000001'
+};
+
+export function resolvePlaceUuid(id?: string, slug?: string): string {
+  if (id && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+    return id;
+  }
+  if (slug && PLACE_UUID_MAP[slug]) return PLACE_UUID_MAP[slug];
+  if (id && PLACE_UUID_MAP[id]) return PLACE_UUID_MAP[id];
+  return 'a0000001-0000-0000-0000-000000000001';
+}
+
+export function mapRawPlaceToClientPlace(row: any): any {
+  if (!row) return { ...SEED_PLACES[0] };
+  const rawCat = (row.category_id || '').toLowerCase();
+  let normalizedCategory = 'parque';
+  if (rawCat === 'restaurant' || rawCat === 'restaurante') normalizedCategory = 'restaurante';
+  else if (rawCat === 'cafe') normalizedCategory = 'cafe';
+  else if (rawCat === 'museu') normalizedCategory = 'museu';
+  else if (rawCat === 'vinicola') normalizedCategory = 'vinicola';
+  else if (rawCat === 'chocolate') normalizedCategory = 'chocolate';
+  else if (rawCat === 'mirante') normalizedCategory = 'mirante';
+  else if (rawCat === 'show') normalizedCategory = 'show';
+  else if (rawCat === 'compras') normalizedCategory = 'compras';
+  else if (rawCat === 'noturno') normalizedCategory = 'noturno';
+
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug || row.id,
+    city: row.city || 'Gramado',
+    category: normalizedCategory,
+    description: row.description_short || row.description || '',
+    latitude: Number(row.latitude || -29.3789),
+    longitude: Number(row.longitude || -50.8741),
+    address: row.address || `${row.city} - RS`,
+    rating: Number(row.rating || 4.8),
+    rating_count: Number(row.rating_count || 120),
+    price_level: Number(row.cost_level || 2),
+    price_info: row.price_info || {
+      adult_price: Number(row.cost_per_person || row.estimated_cost_min || 0),
+      is_free: Number(row.cost_per_person || 0) === 0,
+      currency: 'BRL',
+      source_name: row.source_id || 'Curadoria DUO21',
+      checked_at: row.checked_at || new Date().toISOString(),
+      confidence: 'high'
+    },
+    average_duration_minutes: Number(row.duration_min || 90),
+    reservation_required: Boolean(row.reservation_required),
+    accessible: Boolean(row.accessibility ?? true),
+    pet_friendly: Boolean(row.pet_friendly),
+    children_friendly: Boolean(row.suitable_for_children ?? true),
+    indoor_type: row.indoor_outdoor || 'outdoor',
+    opening_hours: row.opening_hours || { 'seg': '09:00 - 18:00' },
+    media: [{ url: row.media_url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80', is_hero: true }],
+    is_divulga_lugares_partner: Boolean(row.partner || row.divulga_lugares_recommended),
+    active: Boolean(row.active ?? true),
+    is_demo: Boolean(row.is_demo ?? true),
+    created_at: row.created_at || new Date().toISOString(),
+    updated_at: row.updated_at || new Date().toISOString()
+  };
+}
 
 const env: ValidatedEnv = validateServerEnv();
 
@@ -334,9 +447,11 @@ export const supabaseServer = {
 
     if (!serverClient) throw new Error('DATABASE_UNAVAILABLE');
 
+    const tripUuid = toDeterministicUuid(trip.id);
+
     // 1. Upsert trip record
     const { error: tripError } = await serverClient.from('trips').upsert({
-      id: trip.id,
+      id: tripUuid,
       secure_token: trip.secure_token,
       customer_name: trip.preferences?.name || 'Viajante',
       customer_email: trip.preferences?.email || null,
@@ -349,17 +464,18 @@ export const supabaseServer = {
       price_brl: trip.price_brl || 19.90,
       is_demo: Boolean(trip.is_demo),
       unlock_source: trip.unlock_source || 'payment',
-      generation_authorization: trip.status === 'paid'
+      generation_authorization: trip.status === 'paid' || trip.status === 'ready'
     });
 
     if (tripError) {
+      console.error('[Supabase Server] Error upserting trip:', tripError);
       throw new Error(`DATABASE_UNAVAILABLE: Failed to save trip (${tripError.message})`);
     }
 
     // 2. Upsert trip profile
     if (trip.preferences) {
       await serverClient.from('trip_profiles').upsert({
-        trip_id: trip.id,
+        trip_id: tripUuid,
         adults: trip.preferences.adults_count || 2,
         children: trip.preferences.children_count || 0,
         children_ages: trip.preferences.children_ages || [],
@@ -379,29 +495,42 @@ export const supabaseServer = {
         const { data: dayRow, error: dayError } = await serverClient
           .from('trip_days')
           .upsert({
-            trip_id: trip.id,
+            trip_id: tripUuid,
             day_number: day.day_number,
             date: day.date,
             city: day.city_focus || 'Gramado',
-            theme: day.theme || 'Exploração',
-            estimated_cost_min: day.estimated_cost_total || 0,
-            estimated_cost_max: day.estimated_cost_total || 0
-          })
+            theme: day.theme_title || day.theme || 'Exploração',
+            estimated_cost_min: day.total_day_cost_estimated || day.estimated_daily_cost_min || 0,
+            estimated_cost_max: day.total_day_cost_estimated || day.estimated_daily_cost_max || 0
+          }, { onConflict: 'trip_id,day_number' })
           .select('id')
           .single();
 
-        if (dayRow && !dayError && Array.isArray(day.activities)) {
+        if (dayError) {
+          console.error('[Supabase Server] Error saving trip day:', dayError);
+        }
+
+        if (dayRow && Array.isArray(day.activities)) {
           for (let i = 0; i < day.activities.length; i++) {
             const act = day.activities[i];
-            await serverClient.from('trip_activities').upsert({
+            const resolvedPlaceId = resolvePlaceUuid(act.place_id || act.place?.id, act.place?.slug);
+            const actDeterministicId = toDeterministicUuid(`${dayRow.id}_act_${i + 1}`);
+            const costVal = Number(act.estimated_cost_per_person || act.place?.price_info?.adult_price || 0);
+            const { error: actError } = await serverClient.from('trip_activities').upsert({
+              id: actDeterministicId,
               trip_day_id: dayRow.id,
-              place_id: act.place_id || act.place?.id,
-              activity_type: act.activity_type || 'attraction',
-              start_time: act.time ? `${act.time}:00` : '09:00:00',
+              place_id: resolvedPlaceId,
+              activity_type: act.activity_type || act.place?.category || 'attraction',
+              start_time: act.time ? (act.time.length === 5 ? `${act.time}:00` : act.time) : '09:00:00',
               position: i + 1,
               reason: act.notes || act.reason || null,
-              locked: Boolean(act.locked)
-            });
+              locked: Boolean(act.locked),
+              estimated_cost_min: costVal,
+              estimated_cost_max: costVal
+            }, { onConflict: 'id' });
+            if (actError) {
+              console.error('[Supabase Server] Error saving trip activity:', actError);
+            }
           }
         }
       }
@@ -450,7 +579,7 @@ export const supabaseServer = {
       is_demo: Boolean(tripRow.is_demo),
       unlock_source: tripRow.unlock_source || 'payment',
       created_at: tripRow.created_at,
-      paid_at: tripRow.status === 'PAID' ? tripRow.updated_at : undefined,
+      paid_at: tripRow.status === 'PAID' || tripRow.status === 'READY' ? tripRow.updated_at : undefined,
       preferences: {
         name: tripRow.customer_name || 'Viajante',
         email: tripRow.customer_email || undefined,
@@ -474,12 +603,13 @@ export const supabaseServer = {
         day_number: d.day_number,
         date: d.date,
         city_focus: d.city,
-        theme: d.theme,
+        theme_title: d.theme || d.theme_title || 'Exploração',
+        total_day_cost_estimated: Number(d.estimated_cost_min || 0),
         activities: (d.trip_activities || []).map((a: any) => ({
           id: a.id,
           time: a.start_time?.substring(0, 5) || '09:00',
           place_id: a.place_id,
-          place: a.places,
+          place: mapRawPlaceToClientPlace(a.places) || a.places,
           activity_type: a.activity_type,
           locked: a.locked,
           notes: a.reason
@@ -503,10 +633,11 @@ export const supabaseServer = {
 
     if (!serverClient) throw new Error('DATABASE_UNAVAILABLE');
 
+    const tripUuid = toDeterministicUuid(id);
     const { data: tripRow, error } = await serverClient
       .from('trips')
       .select('secure_token')
-      .eq('id', id)
+      .eq('id', tripUuid)
       .maybeSingle();
 
     if (error) throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);

@@ -74,6 +74,7 @@ export function buildItinerary(
   existingPlaces: Place[] = SEED_PLACES,
   existingEvents: SerraEvent[] = SEED_EVENTS
 ): Trip {
+  const placesPool = (Array.isArray(existingPlaces) && existingPlaces.length > 0) ? existingPlaces : SEED_PLACES;
   const totalDays = parseDateDays(preferences.start_date, preferences.end_date);
   const days: TripDay[] = [];
   const usedPlaceIds = new Set<string>();
@@ -150,9 +151,12 @@ export function buildItinerary(
     const activities: TripActivity[] = [];
 
     // Filter available places for this city
-    let candidatePlaces = existingPlaces.filter(p => p.city === dayCity && p.active);
+    let candidatePlaces = placesPool.filter(p => p.city === dayCity && p.active !== false);
     if (candidatePlaces.length === 0) {
-      candidatePlaces = existingPlaces.filter(p => p.active);
+      candidatePlaces = placesPool.filter(p => p.active !== false);
+    }
+    if (candidatePlaces.length === 0) {
+      candidatePlaces = SEED_PLACES.filter(p => p.city === dayCity) || SEED_PLACES;
     }
 
     // Sort candidate places by score
@@ -223,6 +227,8 @@ export function buildItinerary(
         } else if (scoredPlaces.length > 0) {
           // Fallback if small catalog
           chosenPlace = scoredPlaces[0].place;
+        } else if (placesPool.length > 0) {
+          chosenPlace = placesPool[slotIndex % placesPool.length];
         }
       }
 
