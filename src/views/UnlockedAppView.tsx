@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Compass, 
   CalendarDays, 
@@ -20,18 +20,26 @@ import {
   CheckCircle2,
   Lock,
   Mic,
+  MicOff,
   ArrowRight,
   Coffee,
   Building2,
   ExternalLink,
   ChevronRight,
-  Info
+  Info,
+  Loader2,
+  Check,
+  X as CloseIcon,
+  Navigation2
 } from 'lucide-react';
-import { Trip, TripActivity, Place, TravelPace } from '../types';
+import { Trip, TripActivity, Place, TravelPace, NormalizedWeatherForecast } from '../types';
 import { AppTab, BottomNav } from '../components/BottomNav';
 import { PlaceCard } from '../components/PlaceCard';
 import { NearbyAccommodationSection } from '../components/NearbyAccommodationSection';
 import { NearbyOverlayModal } from '../components/NearbyOverlayModal';
+import { WeatherForecastModal } from '../components/WeatherForecastModal';
+import { AppWeatherProvider } from '../services/weather/WeatherProvider';
+import { VoiceRecorderController } from '../services/audio/voiceRecorder';
 import { SEED_PLACES } from '../data/seedData';
 import { DEMO_ACCOMMODATIONS } from '../services/accommodation/AccommodationEngine';
 import { mapProvider } from '../services/map/MapProvider';
@@ -61,7 +69,25 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
   const [selectedDayNumber, setSelectedDayNumber] = useState<number>(1);
   const [quickFilter, setQuickFilter] = useState<'todos' | 'comer' | 'passeios' | 'gratis' | 'ofertas'>('todos');
   const [isNearbyModalOpen, setIsNearbyModalOpen] = useState(false);
+  const [nearbyReferencePlace, setNearbyReferencePlace] = useState<Place | null>(null);
   const [selectedMarkerPlace, setSelectedMarkerPlace] = useState<Place | null>(null);
+
+  // Weather Modal State
+  const [isWeatherModalOpen, setIsWeatherModalOpen] = useState(false);
+  const [selectedWeatherDate, setSelectedWeatherDate] = useState<string | undefined>(undefined);
+
+  // Guia Voice Recording State
+  const [isGuideRecording, setIsGuideRecording] = useState(false);
+  const [isGuideTranscribing, setIsGuideTranscribing] = useState(false);
+  const [guideRecordingSeconds, setGuideRecordingSeconds] = useState(0);
+  const [guideAudioError, setGuideAudioError] = useState<string | null>(null);
+  const [guideAudioInterim, setGuideAudioInterim] = useState('');
+  const [isAudioSupported, setIsAudioSupported] = useState(true);
+  const guideRecorderRef = useRef<VoiceRecorderController | null>(null);
+
+  useEffect(() => {
+    setIsAudioSupported(VoiceRecorderController.isSupported());
+  }, []);
 
   // Guide Chat State
   const [messages, setMessages] = useState<Array<{ sender: 'user' | 'assistant'; text: string; isDemo?: boolean }>>([
@@ -73,6 +99,41 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
   ]);
   const [inputMessage, setInputMessage] = useState('');
   const [isGuideLoading, setIsGuideLoading] = useState(false);
+
+  // Forecast map for all trip days
+  const forecastMap = React.useMemo(() => {
+    const map: Record<string, NormalizedWeatherForecast | null> = {};
+    trip.days.forEach(day => {
+      if (day.weather_forecast) {
+        map[day.date] = {
+          date: day.date,
+          city: day.city_focus || trip.preferences.hotel_city || 'Gramado',
+          condition: (day.weather_forecast.condition?.toUpperCase() as any) || 'PARTLY_CLOUDY',
+          temp_min: day.weather_forecast.temp_min || 13,
+          temp_max: day.weather_forecast.temp_max || 22,
+          rain_probability: day.weather_forecast.rain_probability || 15,
+          precipitation_mm: 1.0,
+          is_indoor_recommended: (day.weather_forecast.rain_probability || 0) > 60,
+          summary: day.weather_forecast.summary || 'Clima ameno na Serra Gaúcha',
+          confidence: 'HIGH',
+          provider: 'OPEN_METEO',
+          cached: true
+        };
+      }
+    });
+    return map;
+  }, [trip.days, trip.preferences.hotel_city]);
+
+  const handleOpenNearby = (act: TripActivity) => {
+    setNearbyReferencePlace(act.place);
+    setIsNearbyModalOpen(true);
+    onFindNearby?.(act);
+  };
+
+  const handleOpenWeather = (date?: string) => {
+    setSelectedWeatherDate(date || currentDay.date);
+    setIsWeatherModalOpen(true);
+  };
 
   const firstName = trip.preferences.name ? trip.preferences.name.split(' ')[0] : 'Viajante';
 
@@ -176,6 +237,65 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
     }
   };
 
+  const handleStartGuideRecording = async () => {
+    setGuideAudioError(null);
+    setGuideRecordingSeconds(0);
+    setGuideAudioInterim('');
+
+    if (!guideRecorderRef.current) {
+      guideRecorderRef.current = new VoiceRecorderController();
+    }
+
+    const started = await guideRecorderRef.current.start({
+      onInterimTranscript: (text) => {
+        setGuideAudioInterim(text);
+      },
+      onTick: (sec) => {
+        setGuideRecordingSeconds(sec);
+      },
+      onError: (msg) => {
+        setGuideAudioError(msg);
+        setIsGuideRecording(false);
+      }
+    });
+
+    if (started) {
+      setIsGuideRecording(true);
+      trackEvent('audio_started');
+    }
+  };
+
+  const handleStopGuideRecording = async () => {
+    if (!guideRecorderRef.current || !isGuideRecording) return;
+    setIsGuideRecording(false);
+    setIsGuideTranscribing(true);
+
+    try {
+      const finalText = await guideRecorderRef.current.stop(guideAudioInterim);
+      if (finalText && finalText.trim().length > 2) {
+        trackEvent('audio_completed');
+        handleSendMessage(finalText.trim());
+      } else {
+        setGuideAudioError('Áudio muito curto ou vazio. Fale sua pergunta para o Guia.');
+      }
+    } catch (err: any) {
+      setGuideAudioError(err.message || 'Falha ao transcrever o áudio.');
+    } finally {
+      setIsGuideTranscribing(false);
+      setGuideAudioInterim('');
+    }
+  };
+
+  const handleCancelGuideRecording = () => {
+    if (guideRecorderRef.current) {
+      guideRecorderRef.current.cancel();
+    }
+    setIsGuideRecording(false);
+    setIsGuideTranscribing(false);
+    setGuideRecordingSeconds(0);
+    setGuideAudioInterim('');
+  };
+
   return (
     <div className="w-full max-w-md mx-auto pb-28">
       {/* DEV Status Pill Banner */}
@@ -217,10 +337,16 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
               </p>
             </div>
 
-            {/* Weather Widget */}
-            <div className="mt-2 bg-[#FAF9F6] p-3 rounded-2xl border border-[#F1EBE0] flex items-center justify-between">
+            {/* Weather Widget (Sprint 9.1 Section 5) */}
+            <button
+              type="button"
+              id="btn-weather-today-summary"
+              onClick={() => handleOpenWeather(currentDay.date)}
+              className="mt-2 w-full bg-[#FAF9F6] hover:bg-[#F3EFE6] p-3 rounded-2xl border border-[#F1EBE0] flex items-center justify-between text-left transition-colors cursor-pointer group"
+              title="Toque para ver a previsão dos dias da viagem"
+            >
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+                <div className="w-9 h-9 rounded-xl bg-amber-50 group-hover:bg-amber-100 text-amber-600 flex items-center justify-center shrink-0">
                   <Sun className="w-5 h-5" />
                 </div>
                 <div>
@@ -228,21 +354,25 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
                     <span className="text-xs font-bold text-[#1E293B]">
                       {currentDay.weather_forecast?.summary || 'Clima Ameno da Serra'}
                     </span>
-                    <span className="text-[9px] bg-slate-200 text-slate-700 px-1.5 py-0.2 rounded font-mono">
-                      MOCK
+                    <span className="text-[10px] text-[#1B4332] font-semibold underline">
+                      Ver previsão
                     </span>
                   </div>
-                  <span className="text-[11px] text-[#64748B] block">
+                  <span className="text-[11px] text-[#64748B] block mt-0.5">
                     Min {currentDay.weather_forecast?.temp_min || 13}°C • Máx {currentDay.weather_forecast?.temp_max || 22}°C • Chuva {currentDay.weather_forecast?.rain_probability || 10}%
                   </span>
                 </div>
               </div>
-              <div className="text-right">
-                <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg">
-                  Ideal ao Ar Livre
+              <div className="text-right shrink-0">
+                <span className={`text-[10px] font-bold px-2 py-1 rounded-lg border ${
+                  (currentDay.weather_forecast?.rain_probability || 0) > 60
+                    ? 'text-amber-900 bg-amber-50 border-amber-200'
+                    : 'text-emerald-800 bg-emerald-50 border-emerald-200'
+                }`}>
+                  {(currentDay.weather_forecast?.rain_probability || 0) > 60 ? '🌧️ Foco Coberto' : '☀️ Ideal ao Ar Livre'}
                 </span>
               </div>
-            </div>
+            </button>
 
             {/* Daily Estimated Budget */}
             <div className="pt-2 flex items-center justify-between text-xs text-[#64748B] border-t border-[#F1EBE0]">
@@ -269,6 +399,7 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
                   id={`shortcut-${chip.id}`}
                   onClick={() => {
                     if (chip.id === 'perto' || chip.id === 'ofertas') {
+                      setNearbyReferencePlace(null);
                       setIsNearbyModalOpen(true);
                     } else {
                       setQuickFilter(chip.id as any);
@@ -296,7 +427,8 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
                 activity={nextActivity}
                 onOpenDetails={onOpenDetails}
                 onSwapActivity={onSwapActivity}
-                onFindNearby={onFindNearby}
+                onFindNearby={handleOpenNearby}
+                onOpenWeather={() => handleOpenWeather(currentDay.date)}
                 isPaywallLocked={false}
               />
             </div>
@@ -323,7 +455,8 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
                 activity={act}
                 onOpenDetails={onOpenDetails}
                 onSwapActivity={onSwapActivity}
-                onFindNearby={onFindNearby}
+                onFindNearby={handleOpenNearby}
+                onOpenWeather={() => handleOpenWeather(currentDay.date)}
                 isPaywallLocked={false}
               />
             ))}
@@ -460,6 +593,28 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
             <p className="text-[11px] text-[#64748B] mt-0.5">
               {currentDay.activities.length} atividades pensadas para evitar trânsito cruzando cidades.
             </p>
+
+            {/* Weather summary for this day (Sprint 9.1 Section 5) */}
+            <button
+              type="button"
+              id={`btn-weather-day-${currentDay.day_number}`}
+              onClick={() => handleOpenWeather(currentDay.date)}
+              className="mt-2.5 w-full bg-[#FAF9F6] hover:bg-[#F3EFE6] px-3 py-2 rounded-xl border border-[#F1EBE0] flex items-center justify-between text-left transition-colors cursor-pointer"
+              title="Toque para ver a previsão dos dias da viagem"
+            >
+              <div className="flex items-center gap-2">
+                <Sun className="w-4 h-4 text-amber-500 shrink-0" />
+                <span className="text-xs font-bold text-[#1E293B]">
+                  {currentDay.weather_forecast?.temp_min || 13}° / {currentDay.weather_forecast?.temp_max || 22}°C
+                </span>
+                <span className="text-[11px] text-[#64748B]">
+                  • Chuva {currentDay.weather_forecast?.rain_probability || 10}%
+                </span>
+              </div>
+              <span className="text-[11px] font-semibold text-[#1B4332] underline">
+                Ver previsão
+              </span>
+            </button>
           </div>
 
           {/* Day Activities List */}
@@ -470,7 +625,8 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
                 activity={act}
                 onOpenDetails={onOpenDetails}
                 onSwapActivity={onSwapActivity}
-                onFindNearby={onFindNearby}
+                onFindNearby={handleOpenNearby}
+                onOpenWeather={() => handleOpenWeather(currentDay.date)}
                 isPaywallLocked={false}
               />
             ))}
@@ -488,8 +644,8 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
               <h3 className="text-base font-extrabold text-[#1B4332]">
                 Mapa Logístico da Serra
               </h3>
-              <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full">
-                SIMULAÇÃO / DEMO
+              <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-full">
+                Visão Espacial
               </span>
             </div>
             <p className="text-xs text-[#64748B] mt-0.5">
@@ -540,7 +696,6 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
             {/* Map Attribution Footer */}
             <div className="flex justify-between items-center z-10 text-[10px] text-slate-700 bg-white/80 backdrop-blur-xs px-2.5 py-1 rounded-lg">
               <span>{mapProvider.getAttribution()}</span>
-              <span>MapLibre Ready</span>
             </div>
           </div>
 
@@ -685,44 +840,103 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
             )}
           </div>
 
-          {/* Input Bar with Prepared Microphone button */}
-          <div className="pt-3 shrink-0">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleSendMessage(inputMessage);
-              }}
-              className="flex gap-2"
-            >
-              <input
-                id="input-guide-chat"
-                type="text"
-                value={inputMessage}
-                onChange={(e) => setInputMessage(e.target.value)}
-                placeholder="Pergunte qualquer coisa sobre sua viagem..."
-                className="flex-1 px-4 py-2.5 rounded-xl border border-[#E7DFCE] bg-white text-xs outline-none focus:border-[#1B4332]"
-              />
+          {/* Input Bar with Real Microphone Recording (Sprint 9.1 Section 1) */}
+          <div className="pt-3 shrink-0 space-y-2">
+            {/* Voice Error Banner */}
+            {guideAudioError && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between">
+                <span>{guideAudioError}</span>
+                <button
+                  type="button"
+                  onClick={() => setGuideAudioError(null)}
+                  className="text-rose-500 hover:text-rose-700 font-bold ml-2 cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
 
-              <button
-                type="button"
-                onClick={() => {
-                  setInputMessage("Qual restaurante típico recomenda para hoje?");
+            {/* Active Voice Recording UI */}
+            {isGuideRecording ? (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between animate-pulse">
+                <div className="flex items-center gap-2 overflow-hidden mr-2">
+                  <span className="w-3 h-3 rounded-full bg-rose-600 animate-ping shrink-0" />
+                  <span className="text-xs font-bold text-rose-900 shrink-0">
+                    Ouvindo... ({Math.floor(guideRecordingSeconds / 60)}:{(guideRecordingSeconds % 60).toString().padStart(2, '0')})
+                  </span>
+                  {guideAudioInterim && (
+                    <span className="text-xs text-rose-700 italic truncate max-w-[130px]">
+                      "{guideAudioInterim}"
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleStopGuideRecording}
+                    className="px-3 py-1.5 bg-[#1B4332] hover:bg-[#2D6A4F] text-white text-xs font-bold rounded-xl shadow flex items-center gap-1 cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Enviar</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelGuideRecording}
+                    className="p-1.5 bg-white hover:bg-slate-100 text-slate-600 rounded-xl border border-slate-200 cursor-pointer"
+                    title="Cancelar gravação"
+                  >
+                    <CloseIcon className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ) : isGuideTranscribing ? (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl flex items-center justify-center gap-2 text-xs font-bold text-amber-900">
+                <Loader2 className="w-4 h-4 animate-spin text-amber-700" />
+                <span>Transcrevendo áudio...</span>
+              </div>
+            ) : (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSendMessage(inputMessage);
                 }}
-                className="p-2.5 bg-slate-100 hover:bg-slate-200 text-[#1B4332] rounded-xl border border-[#E7DFCE] transition-colors"
-                title="Entrada por voz (Preparada para áudio)"
+                className="flex gap-2"
               >
-                <Mic className="w-4 h-4" />
-              </button>
+                <input
+                  id="input-guide-chat"
+                  type="text"
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  placeholder="Pergunte qualquer coisa sobre sua viagem..."
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-[#E7DFCE] bg-white text-xs outline-none focus:border-[#1B4332]"
+                />
 
-              <button
-                id="btn-guide-send"
-                type="submit"
-                disabled={!inputMessage.trim() || isGuideLoading}
-                className="p-2.5 bg-[#1B4332] hover:bg-[#2D6A4F] text-white rounded-xl shadow transition-colors disabled:opacity-50 min-w-[44px] flex items-center justify-center"
-              >
-                <Send className="w-4 h-4" />
-              </button>
-            </form>
+                <button
+                  id="btn-guide-mic"
+                  type="button"
+                  onClick={handleStartGuideRecording}
+                  disabled={!isAudioSupported || isGuideLoading}
+                  className={`p-2.5 rounded-xl border transition-colors cursor-pointer ${
+                    !isAudioSupported
+                      ? 'bg-slate-100 text-slate-300 border-slate-200 cursor-not-allowed'
+                      : 'bg-slate-100 hover:bg-slate-200 text-[#1B4332] border-[#E7DFCE]'
+                  }`}
+                  title={isAudioSupported ? "Falar por voz com o Guia" : "Gravação de áudio não suportada pelo navegador"}
+                >
+                  <Mic className="w-4 h-4" />
+                </button>
+
+                <button
+                  id="btn-guide-send"
+                  type="submit"
+                  disabled={!inputMessage.trim() || isGuideLoading}
+                  className="p-2.5 bg-[#1B4332] hover:bg-[#2D6A4F] text-white rounded-xl shadow transition-colors disabled:opacity-50 min-w-[44px] flex items-center justify-center cursor-pointer"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </form>
+            )}
           </div>
         </div>
       )}
@@ -735,10 +949,22 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
         onChangeTab={setActiveTab}
       />
 
-      {/* Nearby & Offers Overlay Modal (Requirement 10) */}
+      {/* Weather Forecast Modal (Sprint 9.1 Section 5) */}
+      <WeatherForecastModal
+        isOpen={isWeatherModalOpen}
+        onClose={() => setIsWeatherModalOpen(false)}
+        trip={trip}
+        forecastMap={forecastMap}
+        selectedDate={selectedWeatherDate}
+      />
+
+      {/* Nearby & Offers Overlay Modal (Sprint 9.1 Section 4) */}
       <NearbyOverlayModal
         isOpen={isNearbyModalOpen}
-        onClose={() => setIsNearbyModalOpen(false)}
+        onClose={() => {
+          setIsNearbyModalOpen(false);
+          setNearbyReferencePlace(null);
+        }}
         onSelectPlace={(p) => {
           const act: TripActivity = {
             id: `act-nearby-${p.id}`,
@@ -749,9 +975,12 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
             distance_km_from_prev: 1.5,
             estimated_cost_per_person: p.price_info.is_free ? 0 : p.price_info.adult_price
           };
+          setIsNearbyModalOpen(false);
           onOpenDetails(act);
         }}
-        referenceCity={trip.preferences.hotel_city || 'Gramado'}
+        referencePlace={nearbyReferencePlace}
+        referenceCity={nearbyReferencePlace?.city || trip.preferences.hotel_city || 'Gramado'}
+        tripPreferences={trip.preferences}
       />
     </div>
   );

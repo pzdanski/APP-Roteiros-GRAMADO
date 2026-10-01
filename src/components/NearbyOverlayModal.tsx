@@ -50,7 +50,7 @@ export const NearbyOverlayModal: React.FC<NearbyOverlayModalProps> = ({
   referenceCity = 'Gramado',
   tripPreferences
 }) => {
-  const [filter, setFilter] = useState<'todos' | 'comer' | 'passeios' | 'gratis' | 'ofertas'>('todos');
+  const [filter, setFilter] = useState<'todos' | 'comer' | 'passeios' | 'cafes' | 'gratis'>('todos');
   const [intentInput, setIntentInput] = useState('');
   
   // 9.15 GPS Real do Celular (Requires explicit user action)
@@ -88,7 +88,7 @@ export const NearbyOverlayModal: React.FC<NearbyOverlayModalProps> = ({
     );
   };
 
-  // 9.7 Filter and Sort nearby places
+  // 9.7 Filter and Sort nearby places (Sprint 9.1 Section 4)
   const nearbyPlaces = useMemo(() => {
     let list = SEED_PLACES.filter(p => p.active);
 
@@ -97,15 +97,15 @@ export const NearbyOverlayModal: React.FC<NearbyOverlayModalProps> = ({
       list = list.filter(p => p.id !== referencePlace.id);
     }
 
-    // Category filter
+    // Category filter: 🍴 Onde comer, 🎡 O que fazer, ☕ Cafés, 🆓 Gratuitos
     if (filter === 'comer') {
-      list = list.filter(p => p.category === 'restaurante' || p.category === 'cafe' || p.category === 'chocolate');
+      list = list.filter(p => p.category === 'restaurante');
     } else if (filter === 'passeios') {
       list = list.filter(p => p.category === 'parque' || p.category === 'museu' || p.category === 'mirante' || p.category === 'vinicola');
+    } else if (filter === 'cafes') {
+      list = list.filter(p => p.category === 'cafe' || p.category === 'chocolate');
     } else if (filter === 'gratis') {
       list = list.filter(p => p.price_info.is_free);
-    } else if (filter === 'ofertas') {
-      list = list.filter(p => p.coupon?.active);
     }
 
     // Search input
@@ -159,7 +159,7 @@ export const NearbyOverlayModal: React.FC<NearbyOverlayModalProps> = ({
                 {referencePlace ? `Perto de ${referencePlace.name}` : 'Perto Daqui'}
               </h3>
               <span className="text-[10px] text-[#64748B]">
-                Opções ordenadas por proximidade e perfil
+                {referencePlace ? `Usando ${referencePlace.name} como referência` : 'Opções ordenadas por proximidade e perfil'}
               </span>
             </div>
           </div>
@@ -188,7 +188,7 @@ export const NearbyOverlayModal: React.FC<NearbyOverlayModalProps> = ({
             disabled={geoStatus === 'requesting'}
             className="text-[11px] font-bold text-[#1B4332] bg-white border border-[#1B4332]/20 hover:bg-[#EBF3EE] px-2 py-1 rounded-lg shrink-0 transition-colors"
           >
-            {geoStatus === 'requesting' ? 'Obtendo GPS...' : geoStatus === 'granted' ? 'GPS Ativo' : 'Usar meu GPS'}
+            {geoStatus === 'requesting' ? 'Obtendo GPS...' : geoStatus === 'granted' ? 'Localização ativa' : 'Usar minha localização atual'}
           </button>
         </div>
 
@@ -205,14 +205,14 @@ export const NearbyOverlayModal: React.FC<NearbyOverlayModalProps> = ({
             />
           </div>
 
-          {/* Filter Pills */}
+          {/* Filter Pills (Sprint 9.1 Section 4) */}
           <div className="flex gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
             {[
               { id: 'todos', label: 'Todos' },
-              { id: 'comer', label: 'Comer & Cafés' },
-              { id: 'passeios', label: 'Passeios' },
-              { id: 'gratis', label: 'Gratuitos' },
-              { id: 'ofertas', label: 'Com Cupom' }
+              { id: 'comer', label: '🍴 Onde comer' },
+              { id: 'passeios', label: '🎡 O que fazer' },
+              { id: 'cafes', label: '☕ Cafés' },
+              { id: 'gratis', label: '🆓 Gratuitos' }
             ].map(tab => (
               <button
                 key={tab.id}

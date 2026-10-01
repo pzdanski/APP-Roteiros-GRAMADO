@@ -21,6 +21,11 @@ import { parseBudgetFromNaturalText } from './src/services/ai/heuristicParser';
 import { rateLimitService } from './src/server/security/RateLimitService';
 import { singleFlight } from './src/server/cache/SingleFlight';
 import { structuredLoggerMiddleware, sanitizeLog } from './src/server/security/StructuredLogger';
+import { 
+  formatGuideReplyText, 
+  generateSmartGuideResponse, 
+  extractItineraryActivities 
+} from './src/services/ai/GuideContextService';
 
 dotenv.config();
 
@@ -119,7 +124,7 @@ async function startServer() {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(), microphone=()');
+    res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(), microphone=(self)');
     res.setHeader('X-XSS-Protection', '1; mode=block');
 
     // Balanced CSP (Non-breaking for Google Maps, Google Fonts, Open-Meteo, Asaas QR, and Vite)
@@ -487,8 +492,43 @@ Apenas retorne o JSON puro, sem crases de markdown.`;
   });
 
   // -------------------------------------------------------------------------
-  // 4. Trip Guide Assistant (Server-Side Contextual Conversation)
+  // 3b. Audio Voice Transcription Endpoint (Sprint 9.1 Section 1)
   // -------------------------------------------------------------------------
+  app.post('/api/audio/transcribe', async (req, res) => {
+    const { audioBase64, mimeType } = req.body;
+    if (!audioBase64) {
+      res.status(400).json({ error: 'Áudio não fornecido.' });
+      return;
+    }
+
+    const ai = getGeminiClient();
+    if (ai) {
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [
+            {
+              inlineData: {
+                mimeType: mimeType || 'audio/webm',
+                data: audioBase64
+              }
+            },
+            {
+              text: 'Transcreva com precisão o que foi dito no áudio em português brasileiro do viajante. Retorne exclusivamente o texto falado, sem aspas, explicações ou comentários adicionais.'
+            }
+          ]
+        });
+        const transcript = response.text?.trim() || '';
+        res.json({ transcript });
+        return;
+      } catch (err: any) {
+        console.warn('Gemini audio transcription error:', err);
+      }
+    }
+
+    res.json({ transcript: '' });
+  });
+
   // -------------------------------------------------------------------------
   // 4. Trip Guide Assistant (Server-Side Contextual Conversation)
   // -------------------------------------------------------------------------
@@ -508,9 +548,12 @@ Apenas retorne o JSON puro, sem crases de markdown.`;
       }
 
       const ai = getGeminiClient();
+      const existingActivities = extractItineraryActivities(context);
+      const scheduledNames = existingActivities.map(a => a.place.name).join(', ');
 
       // Catalog places summary for guide accuracy
       const placesCatalogSummary = SEED_PLACES.map(p => ({
+        id: p.id,
         name: p.name,
         city: p.city,
         category: p.category,
@@ -527,15 +570,26 @@ Apenas retorne o JSON puro, sem crases de markdown.`;
           const systemInstruction = `Você é o Guia Oficial da Serra Gaúcha (Gramado, Canela e Nova Petrópolis) para o app DUO21 / Divulga Lugares.
 Personalidade da Serra Gaúcha: Simpático, acolhedor, experiente e atencioso.
 Tratamento: Use "tu" de forma natural e brasileira ("como tu preferir", "achei pra ti").
-Regionalismos: Use com moderação (0 ou 1 por resposta curta, NUNCA empilhe vários de uma vez).
-Termos permitidos com naturalidade: Bah, Tchê, Capaz, Tri, Guri, Guria, Baita, Lagartear, Bergamota, Atucanado, Pila, Torrada, Cusco, Afudê, Vivente, Arrecém, Sinaleira.
-Termos raros (só se o contexto justificar muito): "Frio de renguear cusco", "Cair os butiá do bolso".
-PROIBIDO: Não seja caricatural ("Bah tchê vivente tri afudê"). Seja autêntico, prestativo e simpático.
+REGRA PRINCIPAL DE REGIONALISMOS (Sprint 9.1):
+- Máximo de 1 expressão regional gaúcha por resposta.
+- NÃO é obrigatório usar em todas as respostas (evite caricatura).
+- Expressões permitidas em moderação: Bah, Tchê, Capaz, Tri, Guri, Guria, Baita, Lagartear, Bergamota, Atucanado, Pila, Torrada, Cusco, Afudê, Vivente, Arrecém.
+- NUNCA empilhe: "Bah + tri + baita + guri".
+
+FORMATO DE RESPOSTA (Sprint 9.1):
+- Respostas curtas e objetivas: 2 a 3 pequenos parágrafos, com quebras de linha visuais.
+- Não repita o nome do usuário em toda resposta.
+- Sem blocos maciços de texto.
+
+REGRA DE EXCLUSÃO DE ATIVIDADES DO ROTEIRO (Sprint 9.1):
+Locais já agendados na viagem do usuário: [${scheduledNames || 'Nenhum'}].
+- NUNCA recomende esses locais como nova sugestão.
+- EXCEÇÃO: se o usuário perguntar especificamente por um desses locais, responda conscientemente informando que já está no roteiro dele e o horário previsto.
 
 DADOS REAIS OBRIGATÓRIOS:
 1. Responda PRIMEIRO com base nos DADOS REAIS DO ROTEIRO E DO CATÁLOGO fornecidos abaixo.
-2. Se o usuário perguntar horários, informe os horários cadastrados exatos de cada local. Se não souber um específico, diga "Não tenho o horário confirmado deste local". NUNCA mande o usuário pesquisar por conta própria quando o dado existe no app.
-3. Se o usuário pedir site, Instagram, compra de ingresso ou vídeo, retorne no array de links APENAS os links oficiais existentes e cadastrados no catálogo abaixo. NUNCA invente URLs!
+2. Se o usuário perguntar horários, informe os horários cadastrados exatos. Se não souber, diga "Horário não confirmado deste local". NUNCA invente horários.
+3. Se o usuário pedir site ou links, retorne APENAS links oficiais existentes e cadastrados no catálogo abaixo. NUNCA invente URLs!
 4. Responda em JSON estrito (sem markdown):
 {
   "replyText": string,
@@ -554,7 +608,7 @@ ${JSON.stringify(context || {})}`;
             contents: message,
             config: {
               systemInstruction,
-              temperature: 0.3
+              temperature: 0.2
             }
           });
 
@@ -562,8 +616,9 @@ ${JSON.stringify(context || {})}`;
           const cleanJson = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
           try {
             const parsed = JSON.parse(cleanJson);
+            const formattedReply = formatGuideReplyText(parsed.replyText || 'Bah, qualquer dúvida sobre o roteiro é só me chamar!');
             res.json({
-              replyText: parsed.replyText || 'Bah, qualquer dúvida sobre o roteiro é só me chamar!',
+              replyText: formattedReply,
               links: parsed.links || [],
               suggestedAction: parsed.suggestedAction || undefined,
               confidenceLevel: 'high'
@@ -571,7 +626,7 @@ ${JSON.stringify(context || {})}`;
             return;
           } catch {
             res.json({
-              replyText: rawText,
+              replyText: formatGuideReplyText(rawText),
               confidenceLevel: 'high'
             });
             return;
@@ -581,46 +636,13 @@ ${JSON.stringify(context || {})}`;
         }
       }
 
-      // Robust local fallback for Guide assistant (Sections 9.12, 9.13, 9.14)
-      const lower = message.toLowerCase();
-      const matchedPlaces = SEED_PLACES.filter(p => lower.includes(p.name.toLowerCase()) || lower.includes(p.slug));
-      const targetPlaces = matchedPlaces.length > 0 ? matchedPlaces : SEED_PLACES.slice(0, 3);
-
-      if (lower.includes('horário') || lower.includes('horario') || lower.includes('abre') || lower.includes('fecha')) {
-        const hoursList = targetPlaces.map(p => {
-          if (p.always_open) return `${p.name}: Sempre aberto`;
-          const segHours = p.opening_hours?.seg || Object.values(p.opening_hours || {})[0];
-          return segHours ? `${p.name}: ${segHours}` : `${p.name}: Horário não confirmado`;
-        }).join('\n• ');
-
-        res.json({
-          replyText: `Tchê, conferi aqui os horários cadastrados para ti:\n• ${hoursList}`,
-          confidenceLevel: 'high'
-        });
-        return;
-      }
-
-      if (lower.includes('site') || lower.includes('instagram') || lower.includes('link') || lower.includes('vídeo') || lower.includes('video')) {
-        const links: Array<{ label: string; url: string; type: string }> = [];
-        targetPlaces.forEach(p => {
-          if (p.website) links.push({ label: `Site - ${p.name}`, url: p.website, type: 'official' });
-          if (p.instagram) links.push({ label: `Instagram - ${p.name}`, url: p.instagram, type: 'instagram' });
-          if (p.divulga_lugares_tip?.video_url) links.push({ label: `Vídeo - ${p.name}`, url: p.divulga_lugares_tip.video_url, type: 'video' });
-        });
-
-        res.json({
-          replyText: links.length > 0 
-            ? 'Bah, separei os links oficiais cadastrados para ti logo abaixo:' 
-            : 'Tchê, não temos links oficiais verificados cadastrados para este local no momento.',
-          links: links.slice(0, 4),
-          confidenceLevel: 'high'
-        });
-        return;
-      }
-
+      // Robust local deterministic fallback using GuideContextService (Sprint 9.1)
+      const smartResult = generateSmartGuideResponse(message, context);
       res.json({
-        replyText: 'Bah, qualquer dúvida sobre o teu roteiro pela Serra, só me chamar que organizo pra ti!',
-        confidenceLevel: 'medium'
+        replyText: smartResult.replyText,
+        links: smartResult.links,
+        suggestedAction: smartResult.suggestedAction || undefined,
+        confidenceLevel: smartResult.confidenceLevel
       });
     }
   );

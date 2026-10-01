@@ -76,6 +76,7 @@ export interface GroupedHours {
   isAlwaysOpen: boolean;
   isConfirmed: boolean;
   groupedDays: Array<{ days: string; hours: string }>;
+  dailySchedule: Array<{ day: string; dayKey: string; hours: string; isClosed: boolean }>;
   sourceNote?: string;
 }
 
@@ -96,12 +97,19 @@ export function formatOpeningHours(
   source?: string
 ): GroupedHours {
   if (alwaysOpen === true) {
+    const fullWeek = DAY_ORDER.map(k => ({
+      day: DAY_LABELS[k],
+      dayKey: k,
+      hours: 'Sempre aberto',
+      isClosed: false
+    }));
     return {
       label: 'Sempre aberto',
       isAlwaysOpen: true,
       isConfirmed: true,
       groupedDays: [{ days: 'SEG–DOM', hours: 'Sempre aberto' }],
-      sourceNote: source || 'Acesso público contínuo'
+      dailySchedule: fullWeek,
+      sourceNote: source ? formatSourceLabel(source) : 'Acesso público contínuo'
     };
   }
 
@@ -111,24 +119,65 @@ export function formatOpeningHours(
       isAlwaysOpen: false,
       isConfirmed: false,
       groupedDays: [],
+      dailySchedule: [],
       sourceNote: 'Consulte no local ou contato direto'
     };
   }
 
   // Check if all provided days say "Sempre aberto"
   const values = Object.values(hours).map(v => v?.trim());
-  const allAlwaysOpen = values.length >= 5 && values.every(v => v.toLowerCase().includes('aberto') || v.toLowerCase().includes('24h'));
+  const allAlwaysOpen = values.length >= 5 && values.every(v => v?.toLowerCase().includes('aberto') || v?.toLowerCase().includes('24h'));
   if (allAlwaysOpen) {
+    const fullWeek = DAY_ORDER.map(k => ({
+      day: DAY_LABELS[k],
+      dayKey: k,
+      hours: 'Sempre aberto',
+      isClosed: false
+    }));
     return {
       label: 'Sempre aberto',
       isAlwaysOpen: true,
       isConfirmed: true,
       groupedDays: [{ days: 'SEG–DOM', hours: 'Sempre aberto' }],
-      sourceNote: source || 'Curadoria DUO21'
+      dailySchedule: fullWeek,
+      sourceNote: formatSourceLabel(source || 'duo21_curatorship')
     };
   }
 
-  // Group consecutive days with same hours
+  // Build daily 7-day schedule (Sprint 9.1 Section 2)
+  const dailySchedule: Array<{ day: string; dayKey: string; hours: string; isClosed: boolean }> = [];
+  const validEntries = Object.entries(hours).filter(([_, v]) => typeof v === 'string' && v.trim().length > 0);
+  const hasAnyHours = validEntries.length > 0;
+
+  for (const dayKey of DAY_ORDER) {
+    const rawVal = hours[dayKey] || hours[dayKey.toUpperCase()] || hours[DAY_LABELS[dayKey]];
+    const trimmed = rawVal?.trim();
+    if (!trimmed) {
+      // If other days exist, mark as closed or unspecified
+      dailySchedule.push({
+        day: DAY_LABELS[dayKey],
+        dayKey,
+        hours: hasAnyHours ? 'Fechado' : 'Horário não confirmado',
+        isClosed: true
+      });
+    } else if (trimmed.toLowerCase().includes('fechado') || trimmed.toLowerCase() === 'closed') {
+      dailySchedule.push({
+        day: DAY_LABELS[dayKey],
+        dayKey,
+        hours: 'Fechado',
+        isClosed: true
+      });
+    } else {
+      dailySchedule.push({
+        day: DAY_LABELS[dayKey],
+        dayKey,
+        hours: trimmed,
+        isClosed: false
+      });
+    }
+  }
+
+  // Group consecutive days with same hours for backward compatibility
   const grouped: Array<{ days: string; hours: string }> = [];
   let currentGroupDays: string[] = [];
   let currentHours: string | null = null;
@@ -165,9 +214,10 @@ export function formatOpeningHours(
   return {
     label: primaryLabel,
     isAlwaysOpen: false,
-    isConfirmed: grouped.length > 0,
+    isConfirmed: grouped.length > 0 || dailySchedule.some(d => !d.isClosed),
     groupedDays: grouped,
-    sourceNote: source || 'Curadoria DUO21'
+    dailySchedule,
+    sourceNote: formatSourceLabel(source || 'duo21_curatorship')
   };
 }
 
@@ -177,6 +227,39 @@ function formatDaysRange(days: string[]): string {
   if (days.length === 5 && days[0] === 'SEG' && days[4] === 'SEX') return 'SEG–SEX';
   if (days.length === 2 && days[0] === 'SÁB' && days[1] === 'DOM') return 'SÁB–DOM';
   return `${days[0]}–${days[days.length - 1]}`;
+}
+
+/**
+ * 9.3 Source labels: Never leak technical DB IDs to tourists (Sprint 9.1 Section 3).
+ * Maps internal technical keys to friendly user-facing labels.
+ */
+export function formatSourceLabel(rawSource: string | undefined | null): string {
+  if (!rawSource || typeof rawSource !== 'string') {
+    return 'Curadoria Oficial';
+  }
+  const s = rawSource.trim().toLowerCase();
+  if (s === 'duo21_curatorship' || s === 'duo21' || s.includes('curatorship')) {
+    return 'Curadoria DUO21';
+  }
+  if (s === 'official' || s.startsWith('official_') || s === 'ticket_platform') {
+    return 'Site oficial';
+  }
+  if (s === 'google_places' || s === 'google') {
+    return 'Google';
+  }
+  if (s === 'partner' || s === 'partner_deals') {
+    return 'Parceiro';
+  }
+  if (s === 'user_report' || s === 'community') {
+    return 'Informação colaborativa';
+  }
+  if (!s.includes('_')) {
+    return rawSource;
+  }
+  return rawSource
+    .replace(/_/g, ' ')
+    .toLowerCase()
+    .replace(/(?:^|\s)\S/g, (char) => char.toUpperCase());
 }
 
 /**
@@ -208,12 +291,35 @@ export function formatRating(
 }
 
 /**
- * 9.5 Tempo Médio: Restore approximate duration on cards.
- * E.g. "⏱ 60 min". If none exists, do not fabricate.
+ * 9.5 Tempo Médio: Restore approximate duration on cards (Sprint 9.1 Section 12).
+ * Formats nicely (e.g. "60 min", "2h"). Never renders "min" without a value.
  */
 export function formatDuration(durationMinutes?: number | null): string | null {
-  if (typeof durationMinutes === 'number' && durationMinutes > 0) {
+  if (typeof durationMinutes === 'number' && !isNaN(durationMinutes) && durationMinutes > 0) {
+    if (durationMinutes === 60) return '1h';
+    if (durationMinutes === 120) return '2h';
+    if (durationMinutes === 180) return '3h';
+    if (durationMinutes >= 60 && durationMinutes % 60 === 0) return `${durationMinutes / 60}h`;
     return `${durationMinutes} min`;
   }
   return null;
 }
+
+/**
+ * 9.8 / 9.11 Dica Divulga Lugares (Sprint 9.1 Section 11).
+ * Shows ⭐ Dica Divulga Lugares ONLY if the place has verified own content
+ * (Reel, YouTube, video tip). Curatorship alone does NOT trigger the badge.
+ */
+export function hasDivulgaContent(place: any): boolean {
+  if (!place) return false;
+  const videoUrl = place.divulga_lugares_tip?.video_url || place.divulga_content_url;
+  const hasValidVideo = typeof videoUrl === 'string' && (
+    videoUrl.includes('youtube.com') ||
+    videoUrl.includes('youtu.be') ||
+    videoUrl.includes('instagram.com') ||
+    videoUrl.includes('tiktok.com') ||
+    videoUrl.startsWith('http')
+  );
+  return Boolean(hasValidVideo || (place.has_divulga_content && (videoUrl || place.divulga_lugares_tip?.media_url)));
+}
+

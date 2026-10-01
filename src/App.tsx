@@ -614,9 +614,8 @@ export default function App() {
               initialTab={activeAppTab}
               onOpenDetails={(act) => setDetailActivity(act)}
               onSwapActivity={(act) => setSwapActivity(act)}
-              onFindNearby={(act) => {
-                // Open detail with nearby tips
-                setDetailActivity(act);
+              onFindNearby={(_act) => {
+                // Handled in UnlockedAppView via NearbyOverlayModal
               }}
               onUpdateTrip={(updated) => setTrip(updated)}
             />

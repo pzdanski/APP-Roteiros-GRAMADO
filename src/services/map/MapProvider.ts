@@ -40,7 +40,7 @@ export class MockMapProvider implements MapProvider {
   }
 
   getAttribution(): string {
-    return '© OpenStreetMap contributors • MapLibre GL Compatible (Modo DEMO)';
+    return '© OpenStreetMap contributors';
   }
 
   formatMarkers(places: any[]): MapMarker[] {

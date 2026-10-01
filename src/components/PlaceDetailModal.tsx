@@ -17,7 +17,7 @@ import {
   Compass
 } from 'lucide-react';
 import { TripActivity } from '../types';
-import { formatPlaceCategory, formatRating, formatOpeningHours, formatDuration } from '../utils/formatters';
+import { formatPlaceCategory, formatRating, formatOpeningHours, formatDuration, formatSourceLabel, hasDivulgaContent } from '../utils/formatters';
 
 interface PlaceDetailModalProps {
   activity: TripActivity | null;
@@ -46,12 +46,9 @@ export const PlaceDetailModal: React.FC<PlaceDetailModalProps> = ({
     window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
   };
 
-  // 9.8 Rule: Only show Divulga badge if verified own content exists
+  // 9.8 / 9.11 Rule: Only show Divulga badge if verified own content exists
   const videoUrl = place.divulga_lugares_tip?.video_url || place.divulga_content_url;
-  const hasDivulgaContent = Boolean(
-    place.has_divulga_content || 
-    videoUrl
-  );
+  const hasDivulgaContentFlag = hasDivulgaContent(place);
 
   // 9.4 Ratings
   const ratingInfo = formatRating(place.rating, place.rating_count, place.rating_source);
@@ -168,7 +165,7 @@ export const PlaceDetailModal: React.FC<PlaceDetailModalProps> = ({
                 Dado Confiável
               </span>
               <span className="text-[10px] text-[#64748B] block mt-0.5">
-                Fonte: {place.price_info.source_name || 'Curadoria Oficial'}
+                Fonte: {formatSourceLabel(place.price_info.source_name)}
               </span>
             </div>
           </div>
@@ -191,8 +188,8 @@ export const PlaceDetailModal: React.FC<PlaceDetailModalProps> = ({
             </div>
           )}
 
-          {/* 9.8 Divulga Lugares Curator Highlight (ONLY when own content exists) */}
-          {hasDivulgaContent && (
+          {/* 9.8 / 9.11 Divulga Lugares Curator Highlight (ONLY when verified own content exists) */}
+          {hasDivulgaContentFlag && (
             <div className="bg-[#FAF6EE] p-4 rounded-2xl border border-[#E2D5BE] space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-[#1B4332] bg-[#EFE9DE] px-2 py-0.5 rounded-md flex items-center gap-1">
@@ -220,7 +217,7 @@ export const PlaceDetailModal: React.FC<PlaceDetailModalProps> = ({
                   className="mt-1 w-full py-2 bg-white hover:bg-[#F3EFE6] text-[#1B4332] font-semibold text-xs rounded-xl border border-[#D8C9AE] transition-colors flex items-center justify-center gap-1.5 shadow-xs"
                 >
                   <Play className="w-3.5 h-3.5 fill-[#1B4332]" />
-                  <span>{isPlayingVideo ? 'Ocultar vídeo' : 'Assistir nosso vídeo'}</span>
+                  <span>{isPlayingVideo ? 'Ocultar vídeo' : 'Veja nossa experiência'}</span>
                 </button>
               )}
 
@@ -292,26 +289,31 @@ export const PlaceDetailModal: React.FC<PlaceDetailModalProps> = ({
               </span>
             </div>
 
-            <div className="bg-[#FAF9F6] p-3 rounded-xl border border-[#F1EBE0] space-y-1.5 text-xs">
+            <div className="bg-[#FAF9F6] p-3.5 rounded-xl border border-[#F1EBE0] space-y-1.5 text-xs">
               {hoursInfo.isAlwaysOpen ? (
-                <div className="flex items-center justify-between py-1">
+                <div className="flex items-center justify-between py-1.5 px-2 bg-emerald-50 rounded-lg">
                   <span className="font-bold text-[#1B4332] bg-[#EBF3EE] px-2 py-0.5 rounded">
                     SEG–DOM
                   </span>
-                  <span className="font-extrabold text-[#1B4332]">
+                  <span className="font-extrabold text-[#1B4332] flex items-center gap-1">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-700" />
                     Sempre aberto
                   </span>
                 </div>
-              ) : hoursInfo.groupedDays.length > 0 ? (
-                hoursInfo.groupedDays.map((g, idx) => (
-                  <div key={idx} className="flex justify-between items-center py-1 border-b border-[#F1EBE0] last:border-0">
-                    <span className="font-bold text-[#475569]">{g.days}</span>
-                    <span className="text-[#1E293B] font-semibold">{g.hours}</span>
-                  </div>
-                ))
+              ) : hoursInfo.dailySchedule && hoursInfo.dailySchedule.length > 0 ? (
+                <div className="divide-y divide-[#F1EBE0]">
+                  {hoursInfo.dailySchedule.map((d, idx) => (
+                    <div key={idx} className="flex justify-between items-center py-1.5 px-1">
+                      <span className="font-bold text-[#475569] w-12">{d.day}</span>
+                      <span className={d.isClosed ? "text-amber-800 font-semibold" : "text-[#1E293B] font-medium"}>
+                        {d.hours}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div className="py-1 text-[#64748B] italic">
-                  Horário não confirmado no catálogo. Consulte no local.
+                  Horário não confirmado no catálogo. Consulte no local ou contato direto.
                 </div>
               )}
             </div>

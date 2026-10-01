@@ -12,13 +12,14 @@ import {
   Ticket
 } from 'lucide-react';
 import { TripActivity } from '../types';
-import { formatPlaceCategory, formatRating, formatDuration } from '../utils/formatters';
+import { formatPlaceCategory, formatRating, formatDuration, hasDivulgaContent } from '../utils/formatters';
 
 interface PlaceCardProps {
   activity: TripActivity;
   onOpenDetails: (activity: TripActivity) => void;
   onSwapActivity?: (activity: TripActivity) => void;
   onFindNearby?: (activity: TripActivity) => void;
+  onOpenWeather?: () => void;
   isPaywallLocked?: boolean;
 }
 
@@ -27,6 +28,7 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
   onOpenDetails,
   onSwapActivity,
   onFindNearby,
+  onOpenWeather,
   isPaywallLocked = false
 }) => {
   const { place, time, duration_minutes, distance_km_from_prev, locked } = activity;
@@ -70,17 +72,33 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
   const weatherBadge = () => {
     if (place.indoor_type === 'indoor') {
       return (
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-800 bg-sky-50 px-2 py-0.5 rounded-full border border-sky-150">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenWeather?.();
+          }}
+          className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-800 bg-sky-50 hover:bg-sky-100 px-2 py-0.5 rounded-full border border-sky-150 transition-colors cursor-pointer"
+          title="Ver previsão do tempo deste dia"
+        >
           <Umbrella className="w-3 h-3 text-sky-600" />
-          100% Coberto (Chuva OK)
-        </span>
+          <span>100% Coberto (Chuva OK)</span>
+        </button>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-150">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenWeather?.();
+        }}
+        className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-150 transition-colors cursor-pointer"
+        title="Ver previsão do tempo deste dia"
+      >
         <Sun className="w-3 h-3 text-amber-500" />
-        Ar livre
-      </span>
+        <span>Ar livre</span>
+      </button>
     );
   };
 
@@ -90,12 +108,8 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
     window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
   };
 
-  // 9.8 Rule: Only show Divulga badge if own verified content is attached
-  const hasDivulgaContent = Boolean(
-    place.has_divulga_content || 
-    place.divulga_content_url || 
-    place.divulga_lugares_tip?.video_url
-  );
+  // 9.8 / 9.11 Rule: Only show Divulga badge if own verified content is attached
+  const isDivulgaContent = hasDivulgaContent(place);
 
   // 9.10 Rule: Coupon badge
   const hasCoupon = Boolean(place.coupon?.active);
@@ -161,8 +175,8 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
           <div className="flex-1 flex flex-col justify-between min-w-0">
             <div>
               <div className="flex flex-wrap items-center gap-1 mb-1">
-                {/* 9.8 Divulga Badge */}
-                {hasDivulgaContent && (
+                {/* 9.8 / 9.11 Divulga Badge */}
+                {isDivulgaContent && (
                   <span className="inline-block text-[10px] font-bold text-[#1B4332] bg-[#EFE9DE] px-1.5 py-0.5 rounded">
                     ⭐ Dica Divulga Lugares
                   </span>
