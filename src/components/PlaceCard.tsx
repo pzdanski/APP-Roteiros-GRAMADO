@@ -8,9 +8,11 @@ import {
   Lock, 
   Umbrella, 
   Sun,
-  Compass
+  Compass,
+  Ticket
 } from 'lucide-react';
 import { TripActivity } from '../types';
+import { formatPlaceCategory, formatRating, formatDuration } from '../utils/formatters';
 
 interface PlaceCardProps {
   activity: TripActivity;
@@ -88,10 +90,36 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
     window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
   };
 
+  // 9.8 Rule: Only show Divulga badge if own verified content is attached
+  const hasDivulgaContent = Boolean(
+    place.has_divulga_content || 
+    place.divulga_content_url || 
+    place.divulga_lugares_tip?.video_url
+  );
+
+  // 9.10 Rule: Coupon badge
+  const hasCoupon = Boolean(place.coupon?.active);
+
+  // 9.4 Rating formatting
+  const ratingInfo = formatRating(place.rating, place.rating_count, place.rating_source);
+
+  // 9.5 Duration
+  const durationLabel = formatDuration(duration_minutes || place.average_duration_minutes);
+
   return (
     <div 
-      className="bg-white rounded-2xl border border-[#E7DFCE] overflow-hidden shadow-sm hover:shadow-md transition-shadow"
+      className="bg-white rounded-2xl border border-[#E7DFCE] overflow-hidden shadow-sm hover:shadow-md transition-all cursor-pointer group"
       id={`card-place-${place.id}`}
+      onClick={() => onOpenDetails(activity)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpenDetails(activity);
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      aria-label={`Ver detalhes de ${place.name}`}
     >
       {/* Time and City Header Banner */}
       <div className="flex items-center justify-between px-3.5 py-2 bg-[#FAF9F6] border-b border-[#F1EBE0]">
@@ -109,8 +137,8 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
 
       <div className="p-3.5">
         <div className="flex gap-3">
-          {/* Place Photo */}
-          <div className="relative w-24 h-24 sm:w-28 sm:h-28 rounded-xl overflow-hidden shrink-0 bg-slate-100">
+          {/* Place Photo (Clickable) */}
+          <div className="relative w-24 h-24 sm:w-28 sm:h-28 rounded-xl overflow-hidden shrink-0 bg-slate-100 group-hover:opacity-95 transition-opacity">
             <img 
               src={heroImage} 
               alt={place.name} 
@@ -129,19 +157,31 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
             )}
           </div>
 
-          {/* Place Main Info */}
+          {/* Place Main Info (Clickable) */}
           <div className="flex-1 flex flex-col justify-between min-w-0">
             <div>
-              {place.is_divulga_lugares_partner && (
-                <div className="inline-block text-[10px] font-bold text-[#1B4332] bg-[#EFE9DE] px-1.5 py-0.5 rounded mb-1">
-                  ⭐ Dica Divulga Lugares
-                </div>
-              )}
-              <h4 className="font-bold text-sm text-[#0F172A] leading-snug line-clamp-2">
+              <div className="flex flex-wrap items-center gap-1 mb-1">
+                {/* 9.8 Divulga Badge */}
+                {hasDivulgaContent && (
+                  <span className="inline-block text-[10px] font-bold text-[#1B4332] bg-[#EFE9DE] px-1.5 py-0.5 rounded">
+                    ⭐ Dica Divulga Lugares
+                  </span>
+                )}
+                {/* 9.10 Coupon Badge */}
+                {hasCoupon && (
+                  <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-amber-900 bg-amber-100 px-1.5 py-0.5 rounded">
+                    <Ticket className="w-3 h-3 text-amber-700" />
+                    Tem desconto
+                  </span>
+                )}
+              </div>
+
+              <h4 className="font-bold text-sm text-[#0F172A] leading-snug line-clamp-2 group-hover:text-[#1B4332] transition-colors">
                 {place.name}
               </h4>
+              {/* 9.1 Formatted Category */}
               <p className="text-[11px] text-[#64748B] line-clamp-1 mt-0.5">
-                {place.category.toUpperCase()} • {place.address}
+                {formatPlaceCategory(place.category)} • {place.address}
               </p>
             </div>
 
@@ -149,12 +189,14 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
             <div className="flex items-center gap-3 text-[11px] text-[#475569] mt-2 font-medium">
               <span className="flex items-center gap-0.5 text-amber-600 font-bold">
                 <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
-                {place.rating.toFixed(1)}
+                {ratingInfo.formattedRating}
               </span>
-              <span className="flex items-center gap-1">
-                <Clock className="w-3 h-3 text-[#7A6F5D]" />
-                {duration_minutes} min
-              </span>
+              {durationLabel && (
+                <span className="flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-[#7A6F5D]" />
+                  {durationLabel}
+                </span>
+              )}
               {distance_km_from_prev > 0 && (
                 <span className="flex items-center gap-1">
                   <MapPin className="w-3 h-3 text-[#7A6F5D]" />
@@ -169,7 +211,11 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
         <div className="mt-3.5 pt-3 border-t border-[#F1EBE0] grid grid-cols-4 gap-1.5">
           <button
             id={`btn-details-${place.id}`}
-            onClick={() => onOpenDetails(activity)}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenDetails(activity);
+            }}
             className="col-span-2 py-2 px-2.5 bg-[#EBF3EE] hover:bg-[#D7E8DD] text-[#1B4332] font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1"
           >
             Ver detalhes
@@ -177,6 +223,7 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
 
           <button
             id={`btn-maps-${place.id}`}
+            type="button"
             onClick={handleOpenMaps}
             className="py-2 px-2 bg-[#FAF9F6] hover:bg-[#F3EFE6] text-[#475569] font-semibold text-[11px] rounded-xl border border-[#E7DFCE] transition-colors flex items-center justify-center gap-1"
             title="Como chegar no Google Maps"
@@ -188,7 +235,11 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
           {onSwapActivity && (
             <button
               id={`btn-swap-${place.id}`}
-              onClick={() => onSwapActivity(activity)}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSwapActivity(activity);
+              }}
               className="py-2 px-2 bg-[#FAF9F6] hover:bg-[#F3EFE6] text-[#475569] font-semibold text-[11px] rounded-xl border border-[#E7DFCE] transition-colors flex items-center justify-center gap-1"
               title="Trocar este passeio por outro"
             >
@@ -200,7 +251,11 @@ export const PlaceCard: React.FC<PlaceCardProps> = ({
           {onFindNearby && (
             <button
               id={`btn-nearby-${place.id}`}
-              onClick={() => onFindNearby(activity)}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onFindNearby(activity);
+              }}
               className="col-span-4 mt-1 py-1.5 px-2 bg-[#FAF9F6] hover:bg-[#F3EFE6] text-[#7A6F5D] text-[11px] font-medium rounded-lg border border-dashed border-[#D8D2C2] flex items-center justify-center gap-1.5"
             >
               <Compass className="w-3.5 h-3.5 text-[#1B4332]" />

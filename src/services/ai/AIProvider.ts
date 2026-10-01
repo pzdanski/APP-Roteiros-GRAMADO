@@ -11,6 +11,8 @@ export interface GuideAnswerResult {
   replyText: string;
   suggestedAction?: 'swap_activity' | 'view_nearby' | 'adjust_budget' | 'indoor_alternative';
   recommendedPlaceIds?: string[];
+  links?: Array<{ label: string; url: string; type?: string }>;
+  places?: any[];
   confidenceLevel: 'high' | 'medium' | 'low';
 }
 

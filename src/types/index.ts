@@ -226,8 +226,42 @@ export interface Place {
   checked_at?: string;
   confidence?: ConfidenceLevel;
   content_id?: string;
-  content_type?: 'REEL' | 'VIDEO' | 'ARTICLE' | 'PHOTO' | 'TIP';
-  content_url?: string;
+  // Sprint 9 Data Quality & Commercial Types
+  always_open?: boolean;
+  hours_source?: string;
+  hours_last_checked_at?: string;
+  rating_source?: string;
+  rating_last_checked_at?: string;
+  has_divulga_content?: boolean;
+  divulga_content_url?: string;
+  divulga_content_type?: 'instagram_reel' | 'youtube_video' | 'official_video';
+  curated_by_duo21?: boolean;
+  editorial_score?: number;
+  partner_status?: 'none' | 'free' | 'partner' | 'sponsored';
+  partner_priority?: number;
+  coupon?: PlaceCoupon;
+  verified_links?: PlaceVerifiedLink[];
+  logo_url?: string;
+}
+
+export interface PlaceVerifiedLink {
+  url: string;
+  type: 'website' | 'instagram' | 'institutional' | 'maps' | 'tripadvisor' | 'tickets';
+  source: string;
+  verified: boolean;
+  last_checked_at?: string;
+}
+
+export interface PlaceCoupon {
+  place_id: string;
+  coupon_code: string;
+  discount_description: string;
+  affiliate_url?: string;
+  valid_from?: string;
+  valid_until?: string;
+  active: boolean;
+  source: string;
+  last_verified_at?: string;
 }
 
 export interface SerraEvent {

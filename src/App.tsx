@@ -11,6 +11,7 @@ import { MissingQuestionsView } from './views/MissingQuestionsView';
 import { ConfirmationView } from './views/ConfirmationView';
 import { TripGenerationScreen } from './components/TripGenerationScreen';
 import { PaywallPreview } from './components/PaywallPreview';
+import { BriefingProcessingIndicator } from './components/BriefingProcessingIndicator';
 import { DevToolbar } from './components/DevToolbar';
 import { AppTab } from './components/BottomNav';
 
@@ -41,13 +42,21 @@ import { SEED_PLACES } from './data/seedData';
 type AppScreen = 'landing' | 'collect' | 'missing' | 'confirm' | 'generating' | 'preview' | 'unlocked';
 
 const STORAGE_KEY = 'duo21_serra_current_trip';
+const BRIEFING_STORAGE_KEY = 'duo21_briefing_preferences_v1';
 const ADMIN_PARAM = 'admin';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<AppScreen>('landing');
   const [preview, setPreview] = useState<TripPreview | null>(null);
   const [trip, setTrip] = useState<Trip | null>(null);
-  const [pendingPreferences, setPendingPreferences] = useState<TripPreferences | null>(null);
+  const [pendingPreferences, setPendingPreferences] = useState<TripPreferences | null>(() => {
+    try {
+      const saved = localStorage.getItem(BRIEFING_STORAGE_KEY);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [missingFields, setMissingFields] = useState<string[]>([]);
   const [rawPromptText, setRawPromptText] = useState<string>('');
   const [isParsingInput, setIsParsingInput] = useState(false);
@@ -124,6 +133,17 @@ export default function App() {
     }
   }, [trip]);
 
+  // Sync briefing preferences with localStorage (Sprint 9 Section 1: Structured briefing persistence)
+  useEffect(() => {
+    if (pendingPreferences) {
+      try {
+        localStorage.setItem(BRIEFING_STORAGE_KEY, JSON.stringify(pendingPreferences));
+      } catch {
+        // ignore
+      }
+    }
+  }, [pendingPreferences]);
+
   // 1. Submit Voice/Text Prompt from Collect Screen
   const handleSubmitPrompt = async (rawPrompt: string) => {
     setIsParsingInput(true);
@@ -132,21 +152,27 @@ export default function App() {
       const result = await aiProvider.parseTripInput(rawPrompt);
       const parsedPrefs = result.preferences;
 
-      // Ensure mandatory fallback defaults
+      // Ensure mandatory fallback defaults without dropping extracted fields
       const mergedPrefs: TripPreferences = {
         name: parsedPrefs.name || '',
         start_date: parsedPrefs.start_date || new Date().toISOString().split('T')[0],
         end_date: parsedPrefs.end_date || new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
+        number_of_days: parsedPrefs.number_of_days,
         adults_count: parsedPrefs.adults_count || 2,
         children_count: parsedPrefs.children_count || 0,
         children_ages: parsedPrefs.children_ages || [],
+        accommodation_status: parsedPrefs.accommodation_status || (parsedPrefs.hotel_name ? 'booked' : 'not_booked'),
         hotel_name: parsedPrefs.hotel_name,
         hotel_city: parsedPrefs.hotel_city || 'Gramado',
         budget_total: parsedPrefs.budget_total || 3000,
+        budget_food_per_person: parsedPrefs.budget_food_per_person,
+        budget_dinner_per_person: parsedPrefs.budget_dinner_per_person,
+        budget_flexibility: parsedPrefs.budget_flexibility || 'equilibrado',
         pace: parsedPrefs.pace || 'equilibrado',
         transport: parsedPrefs.transport || 'carro_alugado',
         interests: parsedPrefs.interests?.length ? parsedPrefs.interests : ['Gastronomia', 'Natureza', 'Fotos'],
         mandatory_places: parsedPrefs.mandatory_places || [],
+        must_have: parsedPrefs.must_have || [],
         restrictions: parsedPrefs.restrictions || [],
         is_couple: parsedPrefs.is_couple || false
       };
@@ -449,6 +475,7 @@ export default function App() {
   const handleResetTest = () => {
     try {
       localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(BRIEFING_STORAGE_KEY);
     } catch {
       // ignore
     }
@@ -482,6 +509,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#FAF9F6] text-[#1E293B] flex flex-col font-sans selection:bg-[#1B4332] selection:text-white">
+      {/* Delayed Visual Feedback during briefing parsing (Sprint 9 Section 2) */}
+      <BriefingProcessingIndicator isVisible={isParsingInput} delayMs={750} />
+
       {/* Header with Contextual Back Navigation */}
       <Header
         onOpenAdmin={() => setIsAdminOpen(true)}

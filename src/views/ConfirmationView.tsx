@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { 
   Calendar, 
   Users, 
+  User,
   Building2, 
   Car, 
   Wallet, 
@@ -10,7 +11,9 @@ import {
   Edit3, 
   Check, 
   ArrowRight,
-  ArrowLeft
+  ArrowLeft,
+  Star,
+  ShieldAlert
 } from 'lucide-react';
 import { TripPreferences, TravelPace, TransportType } from '../types';
 
@@ -82,6 +85,45 @@ export const ConfirmationView: React.FC<ConfirmationViewProps> = ({
 
       {/* Editable Cards Grid */}
       <div className="space-y-3">
+        {/* 0. Nome do Viajante */}
+        <div className="bg-white p-4 rounded-2xl border border-[#E7DFCE] shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-[#EBF3EE] text-[#1B4332] flex items-center justify-center">
+                <User className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="text-[10px] font-bold uppercase text-[#7A6F5D] tracking-wider block">
+                  Viajante Principal
+                </span>
+                <span className="text-xs font-bold text-[#1E293B]">
+                  {prefs.name ? prefs.name : 'Não informado (opcional)'}
+                </span>
+              </div>
+            </div>
+            <button
+              id="btn-edit-name"
+              onClick={() => setEditingKey(editingKey === 'name' ? null : 'name')}
+              className="text-xs font-bold text-[#1B4332] flex items-center gap-1 hover:underline"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>Editar</span>
+            </button>
+          </div>
+
+          {editingKey === 'name' && (
+            <div className="mt-3 pt-3 border-t border-[#F1EBE0]">
+              <input
+                type="text"
+                value={prefs.name || ''}
+                placeholder="Seu nome ou de quem viaja"
+                onChange={(e) => setPrefs(p => ({ ...p, name: e.target.value }))}
+                className="w-full p-2 rounded-lg border border-[#E7DFCE] text-xs outline-none"
+              />
+            </div>
+          )}
+        </div>
+
         {/* 1. Datas */}
         <div className="bg-white p-4 rounded-2xl border border-[#E7DFCE] shadow-xs">
           <div className="flex items-center justify-between">
@@ -147,6 +189,11 @@ export const ConfirmationView: React.FC<ConfirmationViewProps> = ({
                   {prefs.adults_count} {prefs.adults_count === 1 ? 'adulto' : 'adultos'}
                   {prefs.children_count > 0 ? `, ${prefs.children_count} ${prefs.children_count === 1 ? 'criança' : 'crianças'}` : ' (sem crianças)'}
                 </span>
+                {prefs.children_count > 0 && prefs.children_ages && prefs.children_ages.length > 0 && (
+                  <span className="text-[10px] text-[#64748B] block mt-0.5">
+                    Idades das crianças: {prefs.children_ages.join(' e ')} anos
+                  </span>
+                )}
               </div>
             </div>
             <button
@@ -160,36 +207,79 @@ export const ConfirmationView: React.FC<ConfirmationViewProps> = ({
           </div>
 
           {editingKey === 'people' && (
-            <div className="mt-3 pt-3 border-t border-[#F1EBE0] flex items-center gap-4 text-xs">
-              <div className="flex items-center gap-2">
-                <span>Adultos:</span>
-                <button
-                  type="button"
-                  onClick={() => setPrefs(p => ({ ...p, adults_count: Math.max(1, p.adults_count - 1) }))}
-                  className="w-6 h-6 rounded bg-slate-100 font-bold"
-                >-</button>
-                <span className="font-bold">{prefs.adults_count}</span>
-                <button
-                  type="button"
-                  onClick={() => setPrefs(p => ({ ...p, adults_count: p.adults_count + 1 }))}
-                  className="w-6 h-6 rounded bg-slate-100 font-bold"
-                >+</button>
+            <div className="mt-3 pt-3 border-t border-[#F1EBE0] space-y-3 text-xs">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <span>Adultos:</span>
+                  <button
+                    type="button"
+                    onClick={() => setPrefs(p => ({ ...p, adults_count: Math.max(1, p.adults_count - 1) }))}
+                    className="w-6 h-6 rounded bg-slate-100 font-bold"
+                  >-</button>
+                  <span className="font-bold">{prefs.adults_count}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPrefs(p => ({ ...p, adults_count: p.adults_count + 1 }))}
+                    className="w-6 h-6 rounded bg-slate-100 font-bold"
+                  >+</button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span>Crianças:</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newCount = Math.max(0, prefs.children_count - 1);
+                      setPrefs(p => ({ 
+                        ...p, 
+                        children_count: newCount,
+                        children_ages: p.children_ages?.slice(0, newCount) || []
+                      }));
+                    }}
+                    className="w-6 h-6 rounded bg-slate-100 font-bold"
+                  >-</button>
+                  <span className="font-bold">{prefs.children_count}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newCount = prefs.children_count + 1;
+                      setPrefs(p => ({ 
+                        ...p, 
+                        children_count: newCount,
+                        children_ages: [...(p.children_ages || []), 7]
+                      }));
+                    }}
+                    className="w-6 h-6 rounded bg-slate-100 font-bold"
+                  >+</button>
+                </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <span>Crianças:</span>
-                <button
-                  type="button"
-                  onClick={() => setPrefs(p => ({ ...p, children_count: Math.max(0, p.children_count - 1) }))}
-                  className="w-6 h-6 rounded bg-slate-100 font-bold"
-                >-</button>
-                <span className="font-bold">{prefs.children_count}</span>
-                <button
-                  type="button"
-                  onClick={() => setPrefs(p => ({ ...p, children_count: p.children_count + 1 }))}
-                  className="w-6 h-6 rounded bg-slate-100 font-bold"
-                >+</button>
-              </div>
+              {prefs.children_count > 0 && (
+                <div className="pt-2 border-t border-[#F1EBE0]">
+                  <span className="text-[10px] text-[#64748B] block mb-1">Idades das crianças:</span>
+                  <div className="flex flex-wrap gap-2">
+                    {Array.from({ length: prefs.children_count }).map((_, idx) => (
+                      <div key={idx} className="flex items-center gap-1">
+                        <span className="text-[11px] text-[#7A6F5D]">Criança {idx + 1}:</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={17}
+                          value={prefs.children_ages?.[idx] ?? 7}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value, 10) || 0;
+                            const updatedAges = [...(prefs.children_ages || [])];
+                            updatedAges[idx] = val;
+                            setPrefs(p => ({ ...p, children_ages: updatedAges }));
+                          }}
+                          className="w-12 p-1 border border-[#E7DFCE] rounded text-center text-xs"
+                        />
+                        <span className="text-[10px] text-[#94A3B8]">anos</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -372,13 +462,33 @@ export const ConfirmationView: React.FC<ConfirmationViewProps> = ({
           </div>
 
           {editingKey === 'budget' && (
-            <div className="mt-3 pt-3 border-t border-[#F1EBE0]">
-              <input
-                type="number"
-                value={prefs.budget_total || 3000}
-                onChange={(e) => setPrefs(p => ({ ...p, budget_total: parseInt(e.target.value, 10) || 3000 }))}
-                className="w-full p-2 rounded-lg border border-[#E7DFCE] text-xs outline-none"
-              />
+            <div className="mt-3 pt-3 border-t border-[#F1EBE0] space-y-2">
+              <div className="grid grid-cols-4 gap-1">
+                {[3000, 5000, 10000, 15000].map(amt => (
+                  <button
+                    key={amt}
+                    type="button"
+                    onClick={() => setPrefs(p => ({ ...p, budget_total: amt }))}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-bold border transition-colors ${
+                      prefs.budget_total === amt
+                        ? 'bg-[#1B4332] text-white border-[#1B4332]'
+                        : 'bg-[#FAF9F6] text-[#475569] border-[#E7DFCE]'
+                    }`}
+                  >
+                    R$ {amt >= 1000 ? `${amt / 1000}k` : amt}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-[#7A6F5D]">R$</span>
+                <input
+                  type="number"
+                  step="500"
+                  value={prefs.budget_total || 3000}
+                  onChange={(e) => setPrefs(p => ({ ...p, budget_total: parseInt(e.target.value, 10) || 3000 }))}
+                  className="w-full p-2 rounded-lg border border-[#E7DFCE] text-xs font-bold outline-none"
+                />
+              </div>
             </div>
           )}
         </div>
@@ -448,6 +558,48 @@ export const ConfirmationView: React.FC<ConfirmationViewProps> = ({
             ))}
           </div>
         </div>
+
+        {/* 8. Desejos Especiais & Must-Haves */}
+        {(prefs.must_have && prefs.must_have.length > 0) && (
+          <div className="bg-white p-4 rounded-2xl border border-[#E7DFCE] shadow-xs">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-2">
+                <Star className="w-4 h-4 text-amber-500" />
+                <span className="text-[10px] font-bold uppercase text-[#7A6F5D] tracking-wider">
+                  Desejos Especiais / Não Pode Faltar
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {prefs.must_have.map((mh, idx) => (
+                <span key={idx} className="text-[11px] font-semibold text-amber-900 bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded-full">
+                  ★ {mh}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 9. Restrições & Cuidados */}
+        {(prefs.restrictions && prefs.restrictions.length > 0) && (
+          <div className="bg-white p-4 rounded-2xl border border-[#E7DFCE] shadow-xs">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-orange-500" />
+                <span className="text-[10px] font-bold uppercase text-[#7A6F5D] tracking-wider">
+                  Restrições ou Cuidados
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {prefs.restrictions.map((rst, idx) => (
+                <span key={idx} className="text-[11px] font-semibold text-orange-900 bg-orange-50 border border-orange-200 px-2.5 py-0.5 rounded-full">
+                  {rst}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Main Confirm Button */}

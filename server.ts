@@ -17,6 +17,7 @@ import { finalItineraryEngine } from './src/services/finalItineraryEngine';
 import { SEED_PLACES } from './src/data/seedData';
 import { DEFAULT_WEIGHTS } from './src/services/itineraryEngine';
 import { Place } from './src/types';
+import { parseBudgetFromNaturalText } from './src/services/ai/heuristicParser';
 import { rateLimitService } from './src/server/security/RateLimitService';
 import { singleFlight } from './src/server/cache/SingleFlight';
 import { structuredLoggerMiddleware, sanitizeLog } from './src/server/security/StructuredLogger';
@@ -438,7 +439,7 @@ Analise a mensagem do usuário e extraia estritamente um JSON com a estrutura:
     "children_ages": number[],
     "hotel_name": string (se citado),
     "hotel_city": "Gramado" | "Canela" | "Nova Petrópolis",
-    "budget_total": number (se citado, ex: 3000),
+    "budget_total": number (se citado, ex: "10 mil" -> 10000, "10k" -> 10000, "R$ 10.000" -> 10000),
     "pace": "tranquilo" | "equilibrado" | "aproveitar_bastante",
     "transport": "carro_proprio" | "carro_alugado" | "transfer_uber" | "sem_carro",
     "interests": string[],
@@ -460,6 +461,13 @@ Apenas retorne o JSON puro, sem crases de markdown.`;
         const text = response.text?.trim() || '';
         const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
         const parsed = JSON.parse(cleanJson);
+
+        // Sprint 9 Section 1: Ensure explicit natural language budget takes priority
+        const explicitBudget = parseBudgetFromNaturalText(prompt);
+        if (explicitBudget !== null && parsed?.preferences) {
+          parsed.preferences.budget_total = explicitBudget;
+        }
+
         res.json({
           preferences: parsed.preferences,
           missingFields: parsed.missingFields || [],
@@ -501,14 +509,45 @@ Apenas retorne o JSON puro, sem crases de markdown.`;
 
       const ai = getGeminiClient();
 
+      // Catalog places summary for guide accuracy
+      const placesCatalogSummary = SEED_PLACES.map(p => ({
+        name: p.name,
+        city: p.city,
+        category: p.category,
+        always_open: p.always_open,
+        opening_hours: p.opening_hours,
+        website: p.website,
+        instagram: p.instagram,
+        video_url: p.divulga_lugares_tip?.video_url || p.divulga_content_url,
+        price: p.price_info.is_free ? 'Grátis' : `R$ ${p.price_info.adult_price}`
+      }));
+
       if (ai) {
         try {
           const systemInstruction = `Você é o Guia Oficial da Serra Gaúcha (Gramado, Canela e Nova Petrópolis) para o app DUO21 / Divulga Lugares.
-Regra de ouro: DADOS E REGRAS DECIDEM. A IA ORGANIZA, PERSONALIZA E CONVERSA.
-Nunca invente preços, horários ou funcionamento.
-Se não souber com certeza, oriente o turista a consultar o estabelecimento.
-Responda de forma concisa, acolhedora, objetiva e prática (máximo 3 frases diretas para smartphone).
-Contexto do viajante: ${JSON.stringify(context || {})}`;
+Personalidade da Serra Gaúcha: Simpático, acolhedor, experiente e atencioso.
+Tratamento: Use "tu" de forma natural e brasileira ("como tu preferir", "achei pra ti").
+Regionalismos: Use com moderação (0 ou 1 por resposta curta, NUNCA empilhe vários de uma vez).
+Termos permitidos com naturalidade: Bah, Tchê, Capaz, Tri, Guri, Guria, Baita, Lagartear, Bergamota, Atucanado, Pila, Torrada, Cusco, Afudê, Vivente, Arrecém, Sinaleira.
+Termos raros (só se o contexto justificar muito): "Frio de renguear cusco", "Cair os butiá do bolso".
+PROIBIDO: Não seja caricatural ("Bah tchê vivente tri afudê"). Seja autêntico, prestativo e simpático.
+
+DADOS REAIS OBRIGATÓRIOS:
+1. Responda PRIMEIRO com base nos DADOS REAIS DO ROTEIRO E DO CATÁLOGO fornecidos abaixo.
+2. Se o usuário perguntar horários, informe os horários cadastrados exatos de cada local. Se não souber um específico, diga "Não tenho o horário confirmado deste local". NUNCA mande o usuário pesquisar por conta própria quando o dado existe no app.
+3. Se o usuário pedir site, Instagram, compra de ingresso ou vídeo, retorne no array de links APENAS os links oficiais existentes e cadastrados no catálogo abaixo. NUNCA invente URLs!
+4. Responda em JSON estrito (sem markdown):
+{
+  "replyText": string,
+  "links": [ { "label": string, "url": string, "type": "official" | "instagram" | "tickets" | "video" } ],
+  "suggestedAction": "indoor_alternative" | "swap_activity" | "view_nearby" | null
+}
+
+Catálogo confiável de locais:
+${JSON.stringify(placesCatalogSummary)}
+
+Contexto do viajante:
+${JSON.stringify(context || {})}`;
 
           const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
@@ -519,18 +558,68 @@ Contexto do viajante: ${JSON.stringify(context || {})}`;
             }
           });
 
-          res.json({
-            replyText: response.text?.trim() || 'Ótima pergunta! A Serra Gaúcha oferece alternativas perfeitas para o seu momento.',
-            confidenceLevel: 'high'
-          });
-          return;
+          const rawText = response.text?.trim() || '';
+          const cleanJson = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+          try {
+            const parsed = JSON.parse(cleanJson);
+            res.json({
+              replyText: parsed.replyText || 'Bah, qualquer dúvida sobre o roteiro é só me chamar!',
+              links: parsed.links || [],
+              suggestedAction: parsed.suggestedAction || undefined,
+              confidenceLevel: 'high'
+            });
+            return;
+          } catch {
+            res.json({
+              replyText: rawText,
+              confidenceLevel: 'high'
+            });
+            return;
+          }
         } catch (err) {
           console.warn('Gemini guide fallback:', err);
         }
       }
 
+      // Robust local fallback for Guide assistant (Sections 9.12, 9.13, 9.14)
+      const lower = message.toLowerCase();
+      const matchedPlaces = SEED_PLACES.filter(p => lower.includes(p.name.toLowerCase()) || lower.includes(p.slug));
+      const targetPlaces = matchedPlaces.length > 0 ? matchedPlaces : SEED_PLACES.slice(0, 3);
+
+      if (lower.includes('horário') || lower.includes('horario') || lower.includes('abre') || lower.includes('fecha')) {
+        const hoursList = targetPlaces.map(p => {
+          if (p.always_open) return `${p.name}: Sempre aberto`;
+          const segHours = p.opening_hours?.seg || Object.values(p.opening_hours || {})[0];
+          return segHours ? `${p.name}: ${segHours}` : `${p.name}: Horário não confirmado`;
+        }).join('\n• ');
+
+        res.json({
+          replyText: `Tchê, conferi aqui os horários cadastrados para ti:\n• ${hoursList}`,
+          confidenceLevel: 'high'
+        });
+        return;
+      }
+
+      if (lower.includes('site') || lower.includes('instagram') || lower.includes('link') || lower.includes('vídeo') || lower.includes('video')) {
+        const links: Array<{ label: string; url: string; type: string }> = [];
+        targetPlaces.forEach(p => {
+          if (p.website) links.push({ label: `Site - ${p.name}`, url: p.website, type: 'official' });
+          if (p.instagram) links.push({ label: `Instagram - ${p.name}`, url: p.instagram, type: 'instagram' });
+          if (p.divulga_lugares_tip?.video_url) links.push({ label: `Vídeo - ${p.name}`, url: p.divulga_lugares_tip.video_url, type: 'video' });
+        });
+
+        res.json({
+          replyText: links.length > 0 
+            ? 'Bah, separei os links oficiais cadastrados para ti logo abaixo:' 
+            : 'Tchê, não temos links oficiais verificados cadastrados para este local no momento.',
+          links: links.slice(0, 4),
+          confidenceLevel: 'high'
+        });
+        return;
+      }
+
       res.json({
-        replyText: 'Para aproveitar o melhor da Serra Gaúcha agora, confira a aba Roteiro ou Mapa com as opções mais próximas do seu hotel.',
+        replyText: 'Bah, qualquer dúvida sobre o teu roteiro pela Serra, só me chamar que organizo pra ti!',
         confidenceLevel: 'medium'
       });
     }

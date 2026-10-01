@@ -1,3 +1,5 @@
+import { formatPlaceCategory } from '../../utils/formatters';
+
 export interface MapMarker {
   id: string;
   title: string;
@@ -45,7 +47,7 @@ export class MockMapProvider implements MapProvider {
     return places.map((p, idx) => ({
       id: p.id || `marker-${idx}`,
       title: p.name,
-      subtitle: `${p.city} • ${p.category}`,
+      subtitle: `${p.city} • ${formatPlaceCategory(p.category)}`,
       latitude: p.latitude || -29.3789,
       longitude: p.longitude || -50.8739,
       category: p.category,

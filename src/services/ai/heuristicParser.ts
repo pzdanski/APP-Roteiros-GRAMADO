@@ -1,6 +1,59 @@
 import { TripPreferences, City, BudgetFlexibility } from '../../types';
 import { ParseTripPromptResult } from './AIProvider';
 
+/**
+ * Robust extractor for natural language budget mentions (Sprint 9 Section 1).
+ * Supports:
+ * - "10 mil", "uns 10 mil reais", "até dez mil reais"
+ * - "R$ 10.000", "10000", "10.000"
+ * - "10k", "10 k"
+ * - "orçamento de 10k", "teto de 10 mil"
+ */
+export function parseBudgetFromNaturalText(rawText: string): number | null {
+  if (!rawText || typeof rawText !== 'string') return null;
+  const t = rawText.toLowerCase().trim();
+
+  const wordMap: Record<string, number> = {
+    um: 1, uma: 1, dois: 2, duas: 2, tres: 3, três: 3, quatro: 4, cinco: 5,
+    seis: 6, sete: 7, oito: 8, nove: 9, dez: 10, onze: 11, doze: 12,
+    treze: 13, quatorze: 14, catorze: 14, quinze: 15, dezesseis: 16,
+    dezessete: 17, dezoito: 18, dezenove: 19, vinte: 20, trinta: 30,
+    quarenta: 40, cinquenta: 50
+  };
+
+  // 1. Word + mil, e.g. "dez mil", "uns dez mil reais", "até dez mil reais"
+  for (const [word, val] of Object.entries(wordMap)) {
+    const wordMilRegex = new RegExp(`(?:\\b)${word}\\s+mil(?:\\s+reais)?(?:\\b)`, 'i');
+    if (wordMilRegex.test(t)) {
+      return val * 1000;
+    }
+  }
+
+  // 2. Number + mil: "10 mil", "10mil", "uns 10 mil reais"
+  const numMilMatch = t.match(/\b(\d+)\s*mil(?:\s*reais)?\b/);
+  if (numMilMatch) {
+    return parseInt(numMilMatch[1], 10) * 1000;
+  }
+
+  // 3. Number + k: "10k", "10 k"
+  const kMatch = t.match(/\b(\d+)\s*k\b/);
+  if (kMatch) {
+    return parseInt(kMatch[1], 10) * 1000;
+  }
+
+  // 4. Currency / explicit budget: "R$ 10.000", "10.000 reais", "10000"
+  const currencyMatches = Array.from(t.matchAll(/(?:r\$\s*)?(\d{1,3}(?:\.\d{3})+|\d{4,7})(?:,\d{2})?(?:\s*reais)?/g));
+  for (const m of currencyMatches) {
+    const rawVal = parseInt(m[1].replace(/\./g, ''), 10);
+    const after = t.slice((m.index || 0) + m[0].length, (m.index || 0) + m[0].length + 20);
+    if (!after.includes('por pessoa') && !after.includes('cada') && rawVal >= 500) {
+      return rawVal;
+    }
+  }
+
+  return null;
+}
+
 export function heuristicParseTripInput(rawText: string): ParseTripPromptResult {
   const text = rawText.toLowerCase();
   const preferences: Partial<TripPreferences> = {
@@ -13,9 +66,9 @@ export function heuristicParseTripInput(rawText: string): ParseTripPromptResult 
   };
 
   // 1. Name detection
-  const nameMatch = rawText.match(/(?:meu nome é|me chamo|sou o|sou a|nome:\s*|^)([A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõç]+)/);
+  const nameMatch = rawText.match(/(?:meu nome é|me chamo|sou o|sou a|nome:\s*)\s*([A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõç]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõç]+)?)/i);
   if (nameMatch && nameMatch[1] && !['Ola', 'Olá', 'Oi', 'Vou', 'Viagem', 'Dia', 'Quero'].includes(nameMatch[1])) {
-    preferences.name = nameMatch[1];
+    preferences.name = nameMatch[1].trim();
   } else {
     // Check if the prompt starts with a single capitalized word like "Paulo, 20 a 24..."
     const firstWord = rawText.trim().split(/[\s,]+/)[0];
@@ -117,6 +170,18 @@ export function heuristicParseTripInput(rawText: string): ParseTripPromptResult 
     preferences.number_of_days = parsedDaysCount;
   }
 
+  // Check ISO format range e.g. "2026-10-10 a 2026-10-15" or "2026-10-10 ao dia 2026-10-15"
+  const isoRangeMatch = text.match(/(\d{4}-\d{2}-\d{2})[^\d\n]*(?:a|ao|ao dia|até|-)[^\d\n]*(\d{4}-\d{2}-\d{2})/);
+  if (isoRangeMatch) {
+    preferences.start_date = isoRangeMatch[1];
+    preferences.end_date = isoRangeMatch[2];
+    const s = new Date(isoRangeMatch[1]);
+    const e = new Date(isoRangeMatch[2]);
+    parsedDaysCount = Math.max(1, Math.ceil((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    preferences.number_of_days = parsedDaysCount;
+    foundSpecificDates = true;
+  }
+
   // Check specific range like "20 a 24 de setembro", "10 a 14/11"
   const rangeWithMonthMatch = text.match(/(\d{1,2})\s*(?:a|até|-)\s*(\d{1,2})\s*(?:de\s*([a-zç]+)|\/(\d{1,2}))/);
   if (rangeWithMonthMatch) {
@@ -208,21 +273,14 @@ export function heuristicParseTripInput(rawText: string): ParseTripPromptResult 
   } else if (text.includes('conforto') || text.includes('premium')) {
     flexibility = 'conforto';
     budgetTotal = Math.max(4500, parsedDaysCount * (adults + children * 0.5) * 400);
-  }
-
-  const explicitBudgetMatch = text.match(/(?:orçamento|orcamento|gastar no total|teto|total de)?\s*(?:r\$)?\s*(\d{1,3}(?:\.\d{3})*|\d+)\s*(?:reais|mil|k)?/);
-  if (text.includes('3 mil') || text.includes('três mil') || text.includes('tres mil')) {
-    budgetTotal = 3000;
-  } else if (text.includes('4 mil') || text.includes('quatro mil')) {
-    budgetTotal = 4000;
-  } else if (text.includes('5 mil') || text.includes('cinco mil')) {
-    budgetTotal = 5000;
-  } else if (text.includes('2 mil') || text.includes('dois mil')) {
-    budgetTotal = 2000;
-  } else if (explicitBudgetMatch && parseInt(explicitBudgetMatch[1].replace('.', ''), 10) >= 500) {
-    budgetTotal = parseInt(explicitBudgetMatch[1].replace('.', ''), 10);
   } else {
     budgetTotal = Math.max(2000, parsedDaysCount * (adults + (children > 0 ? children * 0.5 : 0)) * 250);
+  }
+
+  // Explicit Natural Language Budget (Section 1 of Sprint 9)
+  const explicitBudget = parseBudgetFromNaturalText(rawText);
+  if (explicitBudget !== null) {
+    budgetTotal = explicitBudget;
   }
 
   preferences.budget_total = Math.round(budgetTotal);

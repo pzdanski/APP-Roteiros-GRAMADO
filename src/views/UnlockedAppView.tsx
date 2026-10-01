@@ -38,6 +38,7 @@ import { mapProvider } from '../services/map/MapProvider';
 import { aiProvider } from '../services/ai/GeminiProvider';
 import { trackEvent } from '../services/analytics';
 import { formatSafeBrl } from '../utils/safeDisplay';
+import { formatPlaceCategory } from '../utils/formatters';
 
 interface UnlockedAppViewProps {
   trip: Trip;
@@ -66,7 +67,7 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
   const [messages, setMessages] = useState<Array<{ sender: 'user' | 'assistant'; text: string; isDemo?: boolean }>>([
     {
       sender: 'assistant',
-      text: `Olá, ${trip.preferences.name || 'Viajante'}! Sou seu Guia Inteligente da Serra Gaúcha. Tenho o contexto completo da sua estadia em ${trip.preferences.hotel_city || 'Gramado'}, ritmo ${trip.preferences.pace} e paradas programadas. Como posso te orientar agora?`,
+      text: `Olá, ${trip.preferences.name || 'Viajante'}! Sou seu Guia Inteligente da Serra Gaúcha. Tenho o contexto completo da sua estadia em ${trip.preferences.hotel_city || 'Gramado'}, ritmo ${trip.preferences.pace === 'aproveitar_bastante' ? 'intenso para aproveitar bastante' : trip.preferences.pace || 'equilibrado'} e paradas programadas. Como posso te orientar agora?`,
       isDemo: true
     }
   ]);
@@ -530,7 +531,7 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
                     {act.place.name}
                   </div>
                   <div className="text-[10px] opacity-70 truncate mt-0.5">
-                    {act.place.category}
+                    {formatPlaceCategory(act.place.category)}
                   </div>
                 </button>
               ))}
@@ -555,7 +556,7 @@ export const UnlockedAppView: React.FC<UnlockedAppViewProps> = ({
                 />
                 <div className="min-w-0">
                   <span className="text-[10px] font-bold text-[#1B4332] uppercase">
-                    {selectedMarkerPlace.city} • {selectedMarkerPlace.category}
+                    {selectedMarkerPlace.city} • {formatPlaceCategory(selectedMarkerPlace.category)}
                   </span>
                   <h4 className="text-xs font-bold text-[#1E293B] truncate">
                     {selectedMarkerPlace.name}
