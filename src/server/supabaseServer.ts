@@ -2,6 +2,8 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import { validateServerEnv, ValidatedEnv } from './envValidator';
 import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
+import { calculatePlaceDataQuality } from '../utils/dataQuality';
+import { PlaceCategory } from '../types';
 
 export function toDeterministicUuid(id: string): string {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -67,8 +69,9 @@ export function resolvePlaceUuid(id?: string, slug?: string): string {
 export function mapRawPlaceToClientPlace(row: any): any {
   if (!row) return { ...SEED_PLACES[0] };
   const rawCat = (row.category_id || '').toLowerCase();
-  let normalizedCategory = 'parque';
-  if (rawCat === 'restaurant' || rawCat === 'restaurante') normalizedCategory = 'restaurante';
+  let normalizedCategory: PlaceCategory = 'parque';
+  if (rawCat === 'atrativo') normalizedCategory = 'atrativo';
+  else if (rawCat === 'restaurant' || rawCat === 'restaurante') normalizedCategory = 'restaurante';
   else if (rawCat === 'cafe') normalizedCategory = 'cafe';
   else if (rawCat === 'museu') normalizedCategory = 'museu';
   else if (rawCat === 'vinicola') normalizedCategory = 'vinicola';
@@ -78,7 +81,7 @@ export function mapRawPlaceToClientPlace(row: any): any {
   else if (rawCat === 'compras') normalizedCategory = 'compras';
   else if (rawCat === 'noturno') normalizedCategory = 'noturno';
 
-  return {
+  const mappedPlace = {
     id: row.id,
     name: row.name,
     slug: row.slug || row.id,
@@ -90,9 +93,10 @@ export function mapRawPlaceToClientPlace(row: any): any {
     address: row.address || `${row.city} - RS`,
     rating: Number(row.rating || 4.8),
     rating_count: Number(row.rating_count || 120),
-    price_level: Number(row.cost_level || 2),
+    price_level: (Math.min(4, Math.max(1, Number(row.cost_level || 2)))) as 1 | 2 | 3 | 4,
     price_info: row.price_info || {
       adult_price: Number(row.cost_per_person || row.estimated_cost_min || 0),
+      child_price: Number(row.cost_per_child || 0),
       is_free: Number(row.cost_per_person || 0) === 0,
       currency: 'BRL',
       source_name: row.source_id || 'Curadoria DUO21',
@@ -106,13 +110,44 @@ export function mapRawPlaceToClientPlace(row: any): any {
     children_friendly: Boolean(row.suitable_for_children ?? true),
     indoor_type: row.indoor_outdoor || 'outdoor',
     opening_hours: row.opening_hours || { 'seg': '09:00 - 18:00' },
-    media: [{ url: row.media_url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80', is_hero: true }],
-    is_divulga_lugares_partner: Boolean(row.partner || row.divulga_lugares_recommended),
+    media: Array.isArray(row.media) && row.media.length > 0
+      ? row.media
+      : [{ url: row.media_url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80', is_hero: true, source: 'duo21' }],
+    is_divulga_lugares_partner: Boolean(row.partner || row.is_divulga_lugares_partner || row.divulga_lugares_recommended),
     active: Boolean(row.active ?? true),
-    is_demo: Boolean(row.is_demo ?? true),
+    is_demo: Boolean(row.is_demo ?? false),
     created_at: row.created_at || new Date().toISOString(),
-    updated_at: row.updated_at || new Date().toISOString()
+    updated_at: row.updated_at || new Date().toISOString(),
+
+    // Sprint 10A Fields
+    official_url: row.official_url || '',
+    instagram_url: row.instagram_url || '',
+    maps_url: row.maps_url || '',
+    ticket_url: row.ticket_url || '',
+    phone: row.phone || '',
+    whatsapp: row.whatsapp || '',
+    divulga_content_active: Boolean(row.divulga_content_active),
+    divulga_instagram_url: row.divulga_instagram_url || '',
+    divulga_youtube_url: row.divulga_youtube_url || '',
+    divulga_tiktok_url: row.divulga_tiktok_url || '',
+    divulga_content_title: row.divulga_content_title || '',
+    google_place_id: row.google_place_id || '',
+    google_last_sync_at: row.google_last_sync_at || null,
+    google_sync_status: row.google_sync_status || 'NOT_SYNCED',
+    google_data_version: row.google_data_version || null,
+    price_notes: row.price_notes || '',
+    price_valid_from: row.price_valid_from || null,
+    price_valid_until: row.price_valid_until || null,
+    always_open: Boolean(row.always_open),
+    data_quality_label: row.data_quality_label,
+    data_quality_score: row.data_quality_score
   };
+
+  const dq = calculatePlaceDataQuality(mappedPlace);
+  mappedPlace.data_quality_score = typeof mappedPlace.data_quality_score === 'number' ? mappedPlace.data_quality_score : dq.score;
+  mappedPlace.data_quality_label = mappedPlace.data_quality_label || dq.label;
+
+  return mappedPlace;
 }
 
 const env: ValidatedEnv = validateServerEnv();
@@ -213,7 +248,7 @@ export const supabaseServer = {
   // ---------------------------------------------------------------------------
   async getPlaces(): Promise<any[]> {
     if (env.DATA_MODE === 'mock') {
-      return mockStore.places.filter(p => p.active !== false);
+      return mockStore.places.filter(p => p.active !== false).map(p => mapRawPlaceToClientPlace(p));
     }
 
     if (!serverClient) {
@@ -228,12 +263,33 @@ export const supabaseServer = {
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
-    return data || [];
+    return (data || []).map(r => mapRawPlaceToClientPlace(r));
+  },
+
+  async getAllPlacesForAdmin(): Promise<any[]> {
+    if (env.DATA_MODE === 'mock') {
+      return mockStore.places.map(p => mapRawPlaceToClientPlace(p));
+    }
+
+    if (!serverClient) {
+      throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+    }
+
+    const { data, error } = await serverClient
+      .from('places')
+      .select('*')
+      .order('name');
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
+    }
+    return (data || []).map(r => mapRawPlaceToClientPlace(r));
   },
 
   async getPlaceById(id: string): Promise<any | null> {
     if (env.DATA_MODE === 'mock') {
-      return mockStore.places.find(p => p.id === id) || null;
+      const p = mockStore.places.find(item => item.id === id);
+      return p ? mapRawPlaceToClientPlace(p) : null;
     }
 
     if (!serverClient) {
@@ -249,14 +305,17 @@ export const supabaseServer = {
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
-    return data;
+    return data ? mapRawPlaceToClientPlace(data) : null;
   },
 
   async savePlace(place: any): Promise<any> {
     const id = place.id || `place_${Date.now()}`;
+    const dq = calculatePlaceDataQuality(place);
     const newPlace = {
       ...place,
       id,
+      data_quality_score: dq.score,
+      data_quality_label: dq.label,
       created_at: place.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
@@ -265,7 +324,7 @@ export const supabaseServer = {
       const idx = mockStore.places.findIndex(p => p.id === id);
       if (idx >= 0) mockStore.places[idx] = newPlace;
       else mockStore.places.push(newPlace);
-      return newPlace;
+      return mapRawPlaceToClientPlace(newPlace);
     }
 
     if (!serverClient) {
@@ -281,7 +340,7 @@ export const supabaseServer = {
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
-    return data;
+    return mapRawPlaceToClientPlace(data);
   },
 
   async updatePlace(id: string, updates: any): Promise<any> {
@@ -289,18 +348,32 @@ export const supabaseServer = {
       const existing = mockStore.places.find(p => p.id === id);
       if (!existing) throw new Error('Place not found');
       const updated = { ...existing, ...updates, updated_at: new Date().toISOString() };
+      const dq = calculatePlaceDataQuality(updated);
+      updated.data_quality_score = dq.score;
+      updated.data_quality_label = dq.label;
       const idx = mockStore.places.findIndex(p => p.id === id);
       mockStore.places[idx] = updated;
-      return updated;
+      return mapRawPlaceToClientPlace(updated);
     }
 
     if (!serverClient) {
       throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
     }
 
+    const existing = await this.getPlaceById(id);
+    const merged = { ...(existing || {}), ...updates };
+    const dq = calculatePlaceDataQuality(merged);
+
+    const payload = {
+      ...updates,
+      data_quality_score: dq.score,
+      data_quality_label: dq.label,
+      updated_at: new Date().toISOString()
+    };
+
     const { data, error } = await serverClient
       .from('places')
-      .update({ ...updates, updated_at: new Date().toISOString() })
+      .update(payload)
       .eq('id', id)
       .select()
       .single();
@@ -308,12 +381,91 @@ export const supabaseServer = {
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
-    return data;
+    return mapRawPlaceToClientPlace(data);
   },
 
   async deactivatePlace(id: string): Promise<boolean> {
     await this.updatePlace(id, { active: false });
     return true;
+  },
+
+  async deletePlace(id: string): Promise<boolean> {
+    if (env.DATA_MODE === 'mock') {
+      const idx = mockStore.places.findIndex(p => p.id === id);
+      if (idx >= 0) {
+        mockStore.places.splice(idx, 1);
+        return true;
+      }
+      return false;
+    }
+
+    if (!serverClient) {
+      throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+    }
+
+    const { error } = await serverClient
+      .from('places')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
+    }
+    return true;
+  },
+
+  async getCatalogMetrics(): Promise<any> {
+    const places = env.DATA_MODE === 'mock' 
+      ? [...mockStore.places] 
+      : await this.getPlaces().catch(() => [...mockStore.places]);
+
+    const total = places.length;
+    let withPhoto = 0;
+    let withHours = 0;
+    let unconfirmedHours = 0;
+    let withGooglePlaceId = 0;
+    let withDivulgaContent = 0;
+    let partners = 0;
+    let needsUpdate = 0;
+
+    for (const p of places) {
+      const hasPhoto = Boolean(
+        (Array.isArray(p.media) && p.media.some((m: any) => m.active !== false && m.url)) ||
+        p.media_url
+      );
+      if (hasPhoto) withPhoto++;
+
+      const hasHoursConfirmed = Boolean(
+        p.always_open || 
+        (p.opening_hours && Object.keys(p.opening_hours).length > 0 && 
+         Object.values(p.opening_hours).some((v: any) => v && v !== 'Horário não confirmado' && v !== 'Fechado'))
+      );
+      if (hasHoursConfirmed) withHours++;
+      else unconfirmedHours++;
+
+      if (p.google_place_id) withGooglePlaceId++;
+      if (p.divulga_content_active || p.has_divulga_content) withDivulgaContent++;
+      if (p.is_divulga_lugares_partner || p.partner) partners++;
+
+      const dq = calculatePlaceDataQuality(p);
+      if (dq.label === 'Precisa atualização' || dq.label === 'Incompleto') {
+        needsUpdate++;
+      }
+    }
+
+    return {
+      target_mvp: 300,
+      total_places: total,
+      progress_percent: Math.min(100, Math.round((total / 300) * 100)),
+      with_photo: withPhoto,
+      without_photo: total - withPhoto,
+      with_hours: withHours,
+      unconfirmed_hours: unconfirmedHours,
+      with_google_place_id: withGooglePlaceId,
+      with_divulga_content: withDivulgaContent,
+      partners,
+      needs_update: needsUpdate
+    };
   },
 
   // ---------------------------------------------------------------------------

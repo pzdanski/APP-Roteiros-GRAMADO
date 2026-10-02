@@ -28,12 +28,24 @@ import {
   Radio,
   Globe,
   ExternalLink,
-  ShieldCheck
+  ShieldCheck,
+  Edit3,
+  Camera,
+  Sparkles,
+  Clock,
+  Search,
+  Filter,
+  AlertCircle,
+  Eye,
+  Star
 } from 'lucide-react';
 import { Place, SerraEvent, UserReport, AdminMetrics } from '../types';
 import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
 import { EngineWeights, DEFAULT_WEIGHTS } from '../services/itineraryEngine';
 import { providerRegistry, RegisteredProviderStatus } from '../services/providers';
+import { PlaceEditorModal } from './PlaceEditorModal';
+import { calculatePlaceDataQuality } from '../utils/dataQuality';
+import { hasDivulgaContent } from '../utils/formatters';
 
 interface AdminDashboardProps {
   onClose: () => void;
@@ -68,6 +80,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [editLimit, setEditLimit] = useState<number>(300);
   const [campaignUpdating, setCampaignUpdating] = useState(false);
   const [campaignSuccessMsg, setCampaignSuccessMsg] = useState<string | null>(null);
+
+  // Sprint 10A Catálogo Central State
+  const [editingPlace, setEditingPlace] = useState<Place | null>(null);
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogCity, setCatalogCity] = useState('ALL');
+  const [catalogCategory, setCatalogCategory] = useState('ALL');
+  const [catalogActive, setCatalogActive] = useState('ALL');
+  const [catalogPartner, setCatalogPartner] = useState('ALL');
+  const [catalogPhoto, setCatalogPhoto] = useState('ALL');
+  const [catalogHours, setCatalogHours] = useState('ALL');
+  const [catalogGooglePlaceId, setCatalogGooglePlaceId] = useState('ALL');
+  const [catalogDivulga, setCatalogDivulga] = useState('ALL');
+  const [catalogQuality, setCatalogQuality] = useState('ALL');
+  const [catalogMetrics, setCatalogMetrics] = useState<any>(null);
+  const [costGuardMetrics, setCostGuardMetrics] = useState<any>(null);
+  const [costGuardUpdating, setCostGuardUpdating] = useState(false);
+  const [isLoadingPlaces, setIsLoadingPlaces] = useState(false);
 
   // Live operational data for DUO21 CMS modules (Sprint 8C)
   const [healthData, setHealthData] = useState<any>(null);
@@ -184,20 +213,153 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   }, [activeTab, fetchCampaignMetrics]);
 
-  // Mock initial business telemetry
+  const fetchPlacesAndMetrics = React.useCallback(async () => {
+    setIsLoadingPlaces(true);
+    try {
+      const res = await fetch('/api/admin/places', {
+        headers: { 'x-admin-key': adminApiKey }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.places) setPlaces(data.places);
+        if (data.metrics) setCatalogMetrics(data.metrics);
+      }
+      const cgRes = await fetch('/api/admin/places/costguard', {
+        headers: { 'x-admin-key': adminApiKey }
+      });
+      if (cgRes.ok) {
+        const cgData = await cgRes.json();
+        setCostGuardMetrics(cgData);
+      }
+    } catch (err) {
+      console.warn('Error fetching places:', err);
+    } finally {
+      setIsLoadingPlaces(false);
+    }
+  }, [adminApiKey]);
+
+  React.useEffect(() => {
+    fetchPlacesAndMetrics();
+  }, [fetchPlacesAndMetrics]);
+
+  React.useEffect(() => {
+    if (activeTab === 'places') {
+      fetchPlacesAndMetrics();
+    }
+  }, [activeTab, fetchPlacesAndMetrics]);
+
+  const handleSavePlace = async (updatedPlace: Place) => {
+    const res = await fetch(`/api/admin/places/${updatedPlace.id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-key': adminApiKey
+      },
+      body: JSON.stringify(updatedPlace)
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Erro ao atualizar local');
+    }
+    const saved = await res.json();
+    setPlaces(prev => prev.map(p => p.id === saved.id ? saved : p));
+    setEditingPlace(null);
+    fetchPlacesAndMetrics();
+  };
+
+  const handleCreateNewPlace = () => {
+    const newPlace: Place = {
+      id: `place_${Date.now()}`,
+      name: 'Novo Local Turístico',
+      slug: `novo-local-${Date.now()}`,
+      city: 'Gramado',
+      category: 'atrativo',
+      description: '',
+      latitude: -29.3789,
+      longitude: -50.8741,
+      address: 'Gramado - RS',
+      rating: 4.8,
+      rating_count: 50,
+      price_level: 2,
+      price_info: {
+        adult_price: 0,
+        child_price: 0,
+        is_free: false,
+        currency: 'BRL',
+        source_name: 'Curadoria DUO21',
+        checked_at: new Date().toISOString(),
+        confidence: 'high'
+      },
+      average_duration_minutes: 90,
+      reservation_required: false,
+      accessible: true,
+      pet_friendly: false,
+      children_friendly: true,
+      indoor_type: 'outdoor',
+      opening_hours: { 'seg': '09:00 - 18:00' },
+      media: [],
+      is_divulga_lugares_partner: false,
+      active: true,
+      is_demo: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    setEditingPlace(newPlace);
+  };
+
+  const handleToggleCostGuard = async () => {
+    if (!costGuardMetrics) return;
+    setCostGuardUpdating(true);
+    try {
+      const res = await fetch('/api/admin/places/costguard', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': adminApiKey
+        },
+        body: JSON.stringify({ enabled: !costGuardMetrics.enabled })
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setCostGuardMetrics(json.metrics);
+      }
+    } catch (err) {
+      console.warn('CostGuard toggle error:', err);
+    } finally {
+      setCostGuardUpdating(false);
+    }
+  };
+
+  // Telemetry metrics for Analytics tab
   const metrics: AdminMetrics = {
     total_trips_created: 142,
     total_trips_paid: 48,
     conversion_rate: 33.8,
     gross_revenue_brl: 1147.20,
-    estimated_ai_cost_brl: 9.60,       // ~R$ 0.20 per trip
-    estimated_api_cost_brl: 14.40,     // ~R$ 0.30 per trip
-    estimated_payment_fees_brl: 47.50, // ~R$ 0.99 per transaction Asaas PIX/Card
+    estimated_ai_cost_brl: 9.60,
+    estimated_api_cost_brl: 14.40,
+    estimated_payment_fees_brl: 47.50,
     net_margin_percent: 93.7
   };
 
-  const handleTogglePlaceActive = (id: string) => {
-    setPlaces(prev => prev.map(p => p.id === id ? { ...p, active: !p.active } : p));
+  const handleTogglePlaceActive = async (id: string) => {
+    const current = places.find(p => p.id === id);
+    if (!current) return;
+    const newActive = !current.active;
+    setPlaces(prev => prev.map(p => p.id === id ? { ...p, active: newActive } : p));
+    try {
+      await fetch(`/api/admin/places/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': adminApiKey
+        },
+        body: JSON.stringify({ active: newActive })
+      });
+      fetchPlacesAndMetrics();
+    } catch (err) {
+      console.warn('Error toggling place active:', err);
+    }
   };
 
   const handleUpdatePrice = (id: string, newPrice: number) => {
@@ -739,61 +901,475 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         )}
 
-        {/* TAB 2: PLACES & PRICES */}
-        {activeTab === 'places' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="font-extrabold text-sm text-[#1E293B]">Locais Turísticos Cadastrados ({places.length})</h3>
-              <span className="text-xs text-[#7A6F5D]">Atualize preços e disponibilidade</span>
-            </div>
+        {/* ============================================================== */}
+        {/* MODULE: CATÁLOGO CENTRAL DUO21 & PREÇOS (Sprint 10A Section 2) */}
+        {/* ============================================================== */}
+        {activeTab === 'places' && (() => {
+          const filteredPlaces = places.filter(p => {
+            if (catalogSearch.trim()) {
+              const q = catalogSearch.toLowerCase();
+              const matchName = p.name.toLowerCase().includes(q);
+              const matchAddress = (p.address || '').toLowerCase().includes(q);
+              const matchDesc = (p.description || '').toLowerCase().includes(q);
+              if (!matchName && !matchAddress && !matchDesc) return false;
+            }
+            if (catalogCity !== 'ALL' && p.city !== catalogCity) return false;
+            if (catalogCategory !== 'ALL' && p.category !== catalogCategory) return false;
+            if (catalogActive === 'ACTIVE' && !p.active) return false;
+            if (catalogActive === 'INACTIVE' && p.active) return false;
+            if (catalogPartner === 'PARTNER' && !p.is_divulga_lugares_partner && !(p as any).partner) return false;
+            if (catalogPartner === 'NON_PARTNER' && (p.is_divulga_lugares_partner || (p as any).partner)) return false;
 
-            <div className="space-y-2">
-              {places.map(p => (
-                <div key={p.id} className="bg-white p-3.5 rounded-2xl border border-[#E7DFCE] flex items-center justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold text-[#1B4332] bg-[#EBF3EE] px-1.5 py-0.5 rounded">
-                        {p.city}
-                      </span>
-                      <h4 className="font-bold text-xs text-[#1E293B] truncate">{p.name}</h4>
-                      {!p.active && (
-                        <span className="text-[9px] font-bold bg-rose-100 text-rose-700 px-1.5 py-0.2 rounded">
-                          Desativado
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[11px] text-[#64748B] mt-0.5">
-                      {p.category} • Duração {p.average_duration_minutes} min • {p.price_info.source_name}
-                    </p>
-                  </div>
+            const hasPhoto = Boolean((Array.isArray(p.media) && p.media.some(m => m.active !== false && m.url)) || (p as any).media_url);
+            if (catalogPhoto === 'WITH_PHOTO' && !hasPhoto) return false;
+            if (catalogPhoto === 'WITHOUT_PHOTO' && hasPhoto) return false;
 
-                  {/* Price input edit */}
+            const hasHoursConfirmed = Boolean(
+              p.always_open || 
+              (p.opening_hours && Object.keys(p.opening_hours).length > 0 && 
+               Object.values(p.opening_hours).some((v: any) => v && v !== 'Horário não confirmado' && v !== 'Fechado'))
+            );
+            if (catalogHours === 'WITH_HOURS' && !hasHoursConfirmed) return false;
+            if (catalogHours === 'UNCONFIRMED' && hasHoursConfirmed) return false;
+
+            const hasGoogleId = Boolean(p.google_place_id && p.google_place_id.trim().length > 0);
+            if (catalogGooglePlaceId === 'WITH_PLACE_ID' && !hasGoogleId) return false;
+            if (catalogGooglePlaceId === 'WITHOUT_PLACE_ID' && hasGoogleId) return false;
+
+            const hasDivulga = hasDivulgaContent(p);
+            if (catalogDivulga === 'WITH_DIVULGA' && !hasDivulga) return false;
+            if (catalogDivulga === 'WITHOUT_DIVULGA' && hasDivulga) return false;
+
+            if (catalogQuality !== 'ALL') {
+              const dq = calculatePlaceDataQuality(p);
+              if (dq.label !== catalogQuality) return false;
+            }
+
+            return true;
+          });
+
+          return (
+            <div className="space-y-4">
+              {/* Header */}
+              <div className="bg-white p-4 sm:p-5 rounded-3xl border border-[#E7DFCE] shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
                   <div className="flex items-center gap-2">
-                    <div className="text-right">
-                      <span className="text-[10px] text-[#64748B] block">Preço Adulto:</span>
-                      <input
-                        type="number"
-                        defaultValue={p.price_info.adult_price}
-                        onBlur={(e) => handleUpdatePrice(p.id, parseFloat(e.target.value) || 0)}
-                        className="w-16 p-1 text-xs border rounded font-bold text-right outline-none"
-                      />
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-800 bg-emerald-100/70 px-2 py-0.5 rounded-full">
+                      Sprint 10A • Catálogo Inteligente
+                    </span>
+                    <span className="text-xs text-[#7A6F5D]">
+                      {filteredPlaces.length} de {places.length} locais exibidos
+                    </span>
+                  </div>
+                  <h3 className="text-base font-extrabold text-[#1B4332] mt-0.5">
+                    Catálogo Central de Locais & Preços
+                  </h3>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={fetchPlacesAndMetrics}
+                    disabled={isLoadingPlaces}
+                    className="p-2 bg-slate-100 hover:bg-slate-200 text-[#1E293B] text-xs font-bold rounded-xl transition-colors flex items-center gap-1"
+                    title="Recarregar locais do banco"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingPlaces ? 'animate-spin' : ''}`} />
+                    <span className="hidden sm:inline">Recarregar</span>
+                  </button>
+
+                  <button
+                    onClick={handleCreateNewPlace}
+                    className="px-4 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl transition-colors shadow-xs flex items-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>+ Novo Local</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Cost Guard & Google Places Status Card */}
+              {costGuardMetrics && (
+                <div className="bg-[#FAF6EE] p-4 rounded-3xl border border-[#E2D5BE] space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
+                        costGuardMetrics.status === 'CONNECTED' ? 'bg-emerald-100 text-emerald-800' :
+                        costGuardMetrics.status === 'CONFIGURATION_REQUIRED' ? 'bg-amber-100 text-amber-800' :
+                        'bg-slate-200 text-slate-700'
+                      }`}>
+                        {costGuardMetrics.status === 'CONNECTED' ? '🟢 GOOGLE PLACES CONECTADO' :
+                         costGuardMetrics.status === 'CONFIGURATION_REQUIRED' ? '🟡 PLACES READY (AGUARDANDO CHAVE)' :
+                         '⚪ GOOGLE PLACES DESATIVADO (COST GUARD)'}
+                      </span>
+                      <span className="text-xs font-bold text-[#1B4332]">
+                        Provedor Externo: {costGuardMetrics.provider}
+                      </span>
                     </div>
 
                     <button
-                      onClick={() => handleTogglePlaceActive(p.id)}
-                      title={p.active ? 'Desativar temporariamente' : 'Ativar'}
-                      className={`p-2 rounded-xl text-xs font-bold transition-colors ${
-                        p.active ? 'bg-slate-100 text-slate-600 hover:bg-rose-50 hover:text-rose-600' : 'bg-emerald-100 text-emerald-800'
+                      onClick={handleToggleCostGuard}
+                      disabled={costGuardUpdating}
+                      className={`px-3 py-1 text-xs font-bold rounded-xl transition-colors ${
+                        costGuardMetrics.enabled
+                          ? 'bg-rose-100 text-rose-800 hover:bg-rose-200'
+                          : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
                       }`}
                     >
-                      {p.active ? <EyeOff className="w-4 h-4" /> : <Check className="w-4 h-4" />}
+                      {costGuardUpdating ? 'Atualizando...' : costGuardMetrics.enabled ? 'Desativar Consumo' : 'Ativar Consumo'}
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-[#64748B]">
+                    Arquitetura <strong>Cache-First e Supabase-First</strong>. Chamadas externas ocorrem estritamente sob demanda na curadoria administrativa. Limite diário: {costGuardMetrics.callsToday}/{costGuardMetrics.dailyLimit} reqs (Orçamento R$ {costGuardMetrics.dailyBudgetBrl.toFixed(2)}/dia).
+                  </p>
+                </div>
+              )}
+
+              {/* Catalog Metrics Summary Grid (Sprint 10A Section 2) */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Locais Cadastrados</span>
+                  <span className="font-extrabold text-base text-[#1E293B] mt-0.5 block">
+                    {places.length} <span className="text-[10px] text-[#64748B] font-normal">/ 300 meta MVP</span>
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Com Fotos</span>
+                  <span className="font-extrabold text-base text-[#1B4332] mt-0.5 block">
+                    {places.filter(p => (Array.isArray(p.media) && p.media.some(m => m.active !== false && m.url)) || (p as any).media_url).length}
+                    <span className="text-[10px] text-[#64748B] font-normal"> ({places.filter(p => !((Array.isArray(p.media) && p.media.some(m => m.active !== false && m.url)) || (p as any).media_url)).length} sem)</span>
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Google Place ID</span>
+                  <span className="font-extrabold text-base text-blue-700 mt-0.5 block">
+                    {places.filter(p => p.google_place_id && p.google_place_id.trim().length > 0).length}
+                    <span className="text-[10px] text-[#64748B] font-normal"> resolvidos</span>
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">⭐ Dica Divulga</span>
+                  <span className="font-extrabold text-base text-amber-700 mt-0.5 block">
+                    {places.filter(p => hasDivulgaContent(p)).length}
+                    <span className="text-[10px] text-[#64748B] font-normal"> ativos</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* Search & Filters Section */}
+              <div className="bg-white p-4 rounded-3xl border border-[#E7DFCE] space-y-3">
+                {/* Search Bar */}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-[#7A6F5D] absolute left-3.5 top-3" />
+                  <input
+                    type="text"
+                    value={catalogSearch}
+                    onChange={(e) => setCatalogSearch(e.target.value)}
+                    placeholder="Pesquisar por nome do local, endereço ou palavra-chave..."
+                    className="w-full pl-9 pr-4 py-2.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-2xl text-xs text-[#1E293B] outline-none focus:border-[#1B4332]"
+                  />
+                  {catalogSearch && (
+                    <button
+                      onClick={() => setCatalogSearch('')}
+                      className="absolute right-3 top-2.5 text-xs text-[#64748B] hover:text-[#1E293B]"
+                    >
+                      Limpar
+                    </button>
+                  )}
+                </div>
+
+                {/* Filters Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] block mb-0.5">Cidade</label>
+                    <select
+                      value={catalogCity}
+                      onChange={(e) => setCatalogCity(e.target.value)}
+                      className="w-full p-1.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl text-xs font-semibold text-[#1E293B] outline-none"
+                    >
+                      <option value="ALL">Todas as Cidades</option>
+                      <option value="Gramado">Gramado</option>
+                      <option value="Canela">Canela</option>
+                      <option value="Nova Petrópolis">Nova Petrópolis</option>
+                      <option value="Bento Gonçalves">Bento Gonçalves</option>
+                      <option value="Cambará do Sul">Cambará do Sul</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] block mb-0.5">Categoria</label>
+                    <select
+                      value={catalogCategory}
+                      onChange={(e) => setCatalogCategory(e.target.value)}
+                      className="w-full p-1.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl text-xs font-semibold text-[#1E293B] outline-none"
+                    >
+                      <option value="ALL">Todas as Categorias</option>
+                      <option value="atrativo">Atrativo</option>
+                      <option value="restaurante">Restaurante</option>
+                      <option value="cafe">Café</option>
+                      <option value="museu">Museu</option>
+                      <option value="vinicola">Vinícola</option>
+                      <option value="chocolate">Chocolate</option>
+                      <option value="mirante">Mirante</option>
+                      <option value="compras">Compras</option>
+                      <option value="noturno">Noturno</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] block mb-0.5">Status</label>
+                    <select
+                      value={catalogActive}
+                      onChange={(e) => setCatalogActive(e.target.value)}
+                      className="w-full p-1.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl text-xs font-semibold text-[#1E293B] outline-none"
+                    >
+                      <option value="ALL">Todos os Status</option>
+                      <option value="ACTIVE">Apenas Ativos</option>
+                      <option value="INACTIVE">Apenas Inativos</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] block mb-0.5">Parceiro</label>
+                    <select
+                      value={catalogPartner}
+                      onChange={(e) => setCatalogPartner(e.target.value)}
+                      className="w-full p-1.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl text-xs font-semibold text-[#1E293B] outline-none"
+                    >
+                      <option value="ALL">Todos</option>
+                      <option value="PARTNER">Apenas Parceiros</option>
+                      <option value="NON_PARTNER">Não Parceiros</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] block mb-0.5">Qualidade</label>
+                    <select
+                      value={catalogQuality}
+                      onChange={(e) => setCatalogQuality(e.target.value)}
+                      className="w-full p-1.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl text-xs font-semibold text-[#1E293B] outline-none"
+                    >
+                      <option value="ALL">Todas as Faixas</option>
+                      <option value="Completo">Completo (80-100%)</option>
+                      <option value="Bom">Bom (60-79%)</option>
+                      <option value="Incompleto">Incompleto (&lt;60%)</option>
+                      <option value="Precisa atualização">Precisa Atualização</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] block mb-0.5">Fotos</label>
+                    <select
+                      value={catalogPhoto}
+                      onChange={(e) => setCatalogPhoto(e.target.value)}
+                      className="w-full p-1.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl text-xs font-semibold text-[#1E293B] outline-none"
+                    >
+                      <option value="ALL">Todas</option>
+                      <option value="WITH_PHOTO">Com Foto</option>
+                      <option value="WITHOUT_PHOTO">Sem Foto</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] block mb-0.5">Horários</label>
+                    <select
+                      value={catalogHours}
+                      onChange={(e) => setCatalogHours(e.target.value)}
+                      className="w-full p-1.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl text-xs font-semibold text-[#1E293B] outline-none"
+                    >
+                      <option value="ALL">Todos</option>
+                      <option value="WITH_HOURS">Confirmados / 24h</option>
+                      <option value="UNCONFIRMED">Não Confirmados</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] block mb-0.5">Google Place ID</label>
+                    <select
+                      value={catalogGooglePlaceId}
+                      onChange={(e) => setCatalogGooglePlaceId(e.target.value)}
+                      className="w-full p-1.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl text-xs font-semibold text-[#1E293B] outline-none"
+                    >
+                      <option value="ALL">Todos</option>
+                      <option value="WITH_PLACE_ID">Com Place ID</option>
+                      <option value="WITHOUT_PLACE_ID">Sem Place ID</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] block mb-0.5">Conteúdo Divulga</label>
+                    <select
+                      value={catalogDivulga}
+                      onChange={(e) => setCatalogDivulga(e.target.value)}
+                      className="w-full p-1.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl text-xs font-semibold text-[#1E293B] outline-none"
+                    >
+                      <option value="ALL">Todos</option>
+                      <option value="WITH_DIVULGA">⭐ Com Conteúdo</option>
+                      <option value="WITHOUT_DIVULGA">Sem Conteúdo</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-end">
+                    <button
+                      onClick={() => {
+                        setCatalogSearch('');
+                        setCatalogCity('ALL');
+                        setCatalogCategory('ALL');
+                        setCatalogActive('ALL');
+                        setCatalogPartner('ALL');
+                        setCatalogPhoto('ALL');
+                        setCatalogHours('ALL');
+                        setCatalogGooglePlaceId('ALL');
+                        setCatalogDivulga('ALL');
+                        setCatalogQuality('ALL');
+                      }}
+                      className="w-full py-1.5 bg-slate-100 hover:bg-slate-200 text-[#475569] font-bold text-xs rounded-xl transition-colors"
+                    >
+                      Limpar Filtros
                     </button>
                   </div>
                 </div>
-              ))}
+              </div>
+
+              {/* Places List (Clickable & Editable) */}
+              <div className="space-y-2">
+                {filteredPlaces.length === 0 ? (
+                  <div className="bg-white p-8 text-center rounded-3xl border border-[#E7DFCE] text-xs text-[#64748B] space-y-2">
+                    <p className="font-bold text-[#1E293B]">Nenhum local encontrado com os filtros selecionados.</p>
+                    <button
+                      onClick={() => {
+                        setCatalogSearch('');
+                        setCatalogCity('ALL');
+                        setCatalogCategory('ALL');
+                        setCatalogActive('ALL');
+                        setCatalogPartner('ALL');
+                        setCatalogPhoto('ALL');
+                        setCatalogHours('ALL');
+                        setCatalogGooglePlaceId('ALL');
+                        setCatalogDivulga('ALL');
+                        setCatalogQuality('ALL');
+                      }}
+                      className="px-3 py-1.5 bg-[#1B4332] text-white text-xs font-bold rounded-xl"
+                    >
+                      Resetar Filtros
+                    </button>
+                  </div>
+                ) : (
+                  filteredPlaces.map(p => {
+                    const dq = calculatePlaceDataQuality(p);
+                    const isDivulga = hasDivulgaContent(p);
+                    const heroUrl = p.media?.[0]?.url || (p as any).media_url;
+
+                    return (
+                      <div
+                        key={p.id}
+                        className={`bg-white p-3.5 rounded-2xl border transition-all hover:shadow-md flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
+                          p.active ? 'border-[#E7DFCE]' : 'border-rose-200 bg-rose-50/20 opacity-80'
+                        }`}
+                      >
+                        {/* Left: Thumbnail & Info */}
+                        <div 
+                          onClick={() => setEditingPlace(p)}
+                          className="flex items-start gap-3 flex-1 min-w-0 cursor-pointer"
+                        >
+                          {heroUrl ? (
+                            <img
+                              src={heroUrl}
+                              alt={p.name}
+                              className="w-14 h-14 object-cover rounded-xl shrink-0 border border-[#E7DFCE]"
+                            />
+                          ) : (
+                            <div className="w-14 h-14 bg-slate-100 rounded-xl shrink-0 border border-dashed border-slate-300 flex items-center justify-center text-[#7A6F5D]">
+                              <Camera className="w-5 h-5 text-slate-400" />
+                            </div>
+                          )}
+
+                          <div className="flex-1 min-w-0">
+                            {/* Badges row */}
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] font-bold text-[#1B4332] bg-[#EBF3EE] px-1.5 py-0.5 rounded">
+                                {p.city}
+                              </span>
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-[#7A6F5D] bg-[#FAF9F6] border border-[#E7DFCE] px-1.5 py-0.5 rounded">
+                                {p.category}
+                              </span>
+                              {!p.active && (
+                                <span className="text-[9px] font-extrabold bg-rose-100 text-rose-700 px-1.5 py-0.2 rounded">
+                                  Desativado
+                                </span>
+                              )}
+                              {isDivulga && (
+                                <span className="text-[9px] font-extrabold bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded flex items-center gap-0.5">
+                                  ⭐ Dica Divulga
+                                </span>
+                              )}
+                              {(p.is_divulga_lugares_partner || (p as any).partner) && (
+                                <span className="text-[9px] font-extrabold bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded">
+                                  🤝 Parceiro
+                                </span>
+                              )}
+                              {p.google_place_id && (
+                                <span className="text-[9px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.2 rounded">
+                                  Place ID
+                                </span>
+                              )}
+                              <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                                dq.label === 'Completo' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                                dq.label === 'Bom' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
+                                'bg-amber-50 text-amber-700 border border-amber-200'
+                              }`}>
+                                {dq.score}% ({dq.label})
+                              </span>
+                            </div>
+
+                            <h4 className="font-extrabold text-sm text-[#1E293B] truncate mt-1 hover:text-[#1B4332] transition-colors">
+                              {p.name}
+                            </h4>
+                            <p className="text-[11px] text-[#64748B] truncate mt-0.5">
+                              {p.address || `${p.city} - RS`} • Duração {p.average_duration_minutes} min • {p.price_info?.source_name || 'Curadoria'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Right: Price & Actions */}
+                        <div className="flex items-center gap-2 self-end sm:self-center">
+                          <div className="text-right">
+                            <span className="text-[10px] text-[#64748B] block">Adulto:</span>
+                            <span className="text-xs font-black text-[#1E293B]">
+                              {p.price_info?.is_free ? 'Grátis' : `R$ ${p.price_info?.adult_price?.toFixed(2) || '0.00'}`}
+                            </span>
+                          </div>
+
+                          <button
+                            onClick={() => setEditingPlace(p)}
+                            className="px-3 py-1.5 bg-[#FAF6EE] hover:bg-[#EFE7D8] text-[#1B4332] border border-[#D8C9AE] rounded-xl text-xs font-bold transition-colors flex items-center gap-1"
+                            title="Editar todas as seções do local"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>Editar</span>
+                          </button>
+
+                          <button
+                            onClick={() => handleTogglePlaceActive(p.id)}
+                            title={p.active ? 'Desativar temporariamente do catálogo' : 'Ativar no catálogo'}
+                            className={`p-2 rounded-xl text-xs font-bold transition-colors ${
+                              p.active ? 'bg-slate-100 text-slate-600 hover:bg-rose-50 hover:text-rose-600' : 'bg-emerald-100 text-emerald-800'
+                            }`}
+                          >
+                            {p.active ? <EyeOff className="w-4 h-4" /> : <Check className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* TAB 3: EVENTS */}
         {activeTab === 'events' && (
@@ -1457,6 +2033,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         )}
       </div>
+
+      {/* Place Editor Modal (Sprint 10A Section 3) */}
+      <PlaceEditorModal
+        place={editingPlace}
+        isOpen={Boolean(editingPlace)}
+        onClose={() => setEditingPlace(null)}
+        onSave={handleSavePlace}
+        adminApiKey={adminApiKey}
+      />
     </div>
   );
 };

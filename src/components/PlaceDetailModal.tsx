@@ -14,10 +14,11 @@ import {
   ArrowLeft,
   Ticket,
   Instagram,
-  Compass
+  Compass,
+  MessageCircle
 } from 'lucide-react';
 import { TripActivity } from '../types';
-import { formatPlaceCategory, formatRating, formatOpeningHours, formatDuration, formatSourceLabel, hasDivulgaContent } from '../utils/formatters';
+import { formatPlaceCategory, formatRating, formatOpeningHours, formatDuration, formatSourceLabel, hasDivulgaContent, getPlaceHeroPhoto } from '../utils/formatters';
 
 interface PlaceDetailModalProps {
   activity: TripActivity | null;
@@ -39,15 +40,24 @@ export const PlaceDetailModal: React.FC<PlaceDetailModalProps> = ({
   if (!activity) return null;
   const { place } = activity;
 
-  const heroImage = place.media?.[0]?.url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1000&q=80';
+  const heroImage = getPlaceHeroPhoto(place);
 
+  const validMapsUrl = place.maps_url && place.maps_url.startsWith('http') ? place.maps_url : null;
   const handleOpenMaps = () => {
+    if (validMapsUrl) {
+      window.open(validMapsUrl, '_blank');
+      return;
+    }
     const query = encodeURIComponent(`${place.name}, ${place.city} - RS`);
     window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
   };
 
-  // 9.8 / 9.11 Rule: Only show Divulga badge if verified own content exists
-  const videoUrl = place.divulga_lugares_tip?.video_url || place.divulga_content_url;
+  // Sprint 10A Section 5 Rule: Only show Divulga badge if verified own content exists
+  const videoUrl = place.divulga_instagram_url || 
+                   place.divulga_youtube_url || 
+                   place.divulga_tiktok_url || 
+                   place.divulga_lugares_tip?.video_url || 
+                   place.divulga_content_url;
   const hasDivulgaContentFlag = hasDivulgaContent(place);
 
   // 9.4 Ratings
@@ -63,9 +73,18 @@ export const PlaceDetailModal: React.FC<PlaceDetailModalProps> = ({
   // 9.5 Duration
   const durationText = formatDuration(place.average_duration_minutes) || 'Tempo livre';
 
-  // 9.3 Validated links
-  const validWebsite = place.website && place.website.startsWith('http') ? place.website : null;
-  const validInstagram = place.instagram && place.instagram.startsWith('http') ? place.instagram : null;
+  // Sprint 10A Section 4: Validated links
+  const validWebsite = (place.official_url && place.official_url.startsWith('http'))
+    ? place.official_url
+    : (place.website && place.website.startsWith('http') ? place.website : null);
+
+  const validInstagram = (place.instagram_url && place.instagram_url.startsWith('http'))
+    ? place.instagram_url
+    : (place.instagram && place.instagram.startsWith('http') ? place.instagram : null);
+
+  const validTicketUrl = place.ticket_url && place.ticket_url.startsWith('http') ? place.ticket_url : null;
+  const validPhone = place.phone ? place.phone.trim() : null;
+  const validWhatsapp = place.whatsapp ? place.whatsapp.trim().replace(/\D/g, '') : null;
   const verifiedLinks = place.verified_links?.filter(l => l.verified && l.url?.startsWith('http')) || [];
 
   return (
@@ -359,6 +378,39 @@ export const PlaceDetailModal: React.FC<PlaceDetailModalProps> = ({
                   >
                     <Instagram className="w-3.5 h-3.5" />
                     <span>Instagram oficial</span>
+                  </a>
+                )}
+                {validTicketUrl && (
+                  <a
+                    href={validTicketUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-50 text-amber-900 font-bold text-xs hover:bg-amber-100 transition-colors border border-amber-200"
+                  >
+                    <Ticket className="w-3.5 h-3.5" />
+                    <span>Ingressos Oficiais</span>
+                  </a>
+                )}
+                {validWhatsapp && (
+                  <a
+                    href={`https://wa.me/55${validWhatsapp}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-800 font-bold text-xs hover:bg-emerald-100 transition-colors border border-emerald-200"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5" />
+                    <span>WhatsApp</span>
+                  </a>
+                )}
+                {validMapsUrl && (
+                  <a
+                    href={validMapsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 font-bold text-xs hover:bg-blue-100 transition-colors border border-blue-200"
+                  >
+                    <Navigation className="w-3.5 h-3.5" />
+                    <span>Google Maps</span>
                   </a>
                 )}
                 {verifiedLinks.map((link, idx) => (

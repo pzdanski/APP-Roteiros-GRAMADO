@@ -307,19 +307,85 @@ export function formatDuration(durationMinutes?: number | null): string | null {
 
 /**
  * 9.8 / 9.11 Dica Divulga Lugares (Sprint 9.1 Section 11).
- * Shows ⭐ Dica Divulga Lugares ONLY if the place has verified own content
- * (Reel, YouTube, video tip). Curatorship alone does NOT trigger the badge.
+/**
+ * Shows ⭐ Dica Divulga Lugares ONLY if:
+ * 1. divulga_content_active = true (or has_divulga_content = true)
+ * 2. AND there exists at least one valid verified content URL (Reel, YouTube, TikTok, Video tip).
+ * Curatorship DUO21 alone NEVER triggers the badge (Sprint 10A Section 5).
  */
 export function hasDivulgaContent(place: any): boolean {
   if (!place) return false;
-  const videoUrl = place.divulga_lugares_tip?.video_url || place.divulga_content_url;
-  const hasValidVideo = typeof videoUrl === 'string' && (
-    videoUrl.includes('youtube.com') ||
-    videoUrl.includes('youtu.be') ||
-    videoUrl.includes('instagram.com') ||
-    videoUrl.includes('tiktok.com') ||
-    videoUrl.startsWith('http')
-  );
-  return Boolean(hasValidVideo || (place.has_divulga_content && (videoUrl || place.divulga_lugares_tip?.media_url)));
+
+  const isActive = Boolean(place.divulga_content_active ?? place.has_divulga_content);
+  if (!isActive) return false;
+
+  const candidateUrls = [
+    place.divulga_instagram_url,
+    place.divulga_youtube_url,
+    place.divulga_tiktok_url,
+    place.divulga_content_url,
+    place.divulga_lugares_tip?.video_url,
+    place.divulga_lugares_tip?.media_url
+  ];
+
+  const hasValidUrl = candidateUrls.some(url => {
+    if (typeof url !== 'string' || !url.trim().startsWith('http')) return false;
+    const lower = url.toLowerCase();
+    return (
+      lower.includes('youtube.com') ||
+      lower.includes('youtu.be') ||
+      lower.includes('instagram.com') ||
+      lower.includes('tiktok.com') ||
+      lower.includes('divulgalugares.com.br') ||
+      lower.startsWith('https://')
+    );
+  });
+
+  return hasValidUrl;
+}
+
+/**
+ * Returns the primary display photo according to Sprint 10A Section 6 priority:
+ * 1. DUO21 / manual
+ * 2. parceiro
+ * 3. oficial / licenciada
+ * 4. Google Places
+ * 5. fallback neutro
+ */
+export function getPlaceHeroPhoto(place: any): string {
+  if (!place) return 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1000&q=80';
+
+  const mediaList = Array.isArray(place.media) ? place.media.filter((m: any) => m && m.active !== false && m.url) : [];
+
+  if (mediaList.length === 0) {
+    if (place.media_url && typeof place.media_url === 'string') return place.media_url;
+    return 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1000&q=80';
+  }
+
+  // 1. DUO21 / manual hero
+  const duoHero = mediaList.find((m: any) => m.is_hero && (m.source === 'duo21' || !m.source));
+  if (duoHero) return duoHero.url;
+
+  const duoMedia = mediaList.find((m: any) => m.source === 'duo21');
+  if (duoMedia) return duoMedia.url;
+
+  // 2. Partner
+  const partnerMedia = mediaList.find((m: any) => m.source === 'partner');
+  if (partnerMedia) return partnerMedia.url;
+
+  // 3. Official / external licensed
+  const officialMedia = mediaList.find((m: any) => m.source === 'official' || m.source === 'external_licensed');
+  if (officialMedia) return officialMedia.url;
+
+  // 4. Any item marked as is_hero
+  const anyHero = mediaList.find((m: any) => m.is_hero);
+  if (anyHero) return anyHero.url;
+
+  // 5. Google Places
+  const googleMedia = mediaList.find((m: any) => m.source === 'google_places');
+  if (googleMedia) return googleMedia.url;
+
+  // 6. First item or fallback
+  return mediaList[0]?.url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1000&q=80';
 }
 

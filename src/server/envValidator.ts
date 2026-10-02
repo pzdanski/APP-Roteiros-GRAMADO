@@ -16,6 +16,12 @@ export interface ValidatedEnv {
   APP_PUBLIC_URL: string;
   PUBLIC_APP_ORIGIN: string;
   MAX_GENERATION_API_COST_BRL: number;
+  // Sprint 10A Cost Guard
+  GOOGLE_PLACES_ENABLED: boolean;
+  GOOGLE_PLACES_DAILY_REQUEST_LIMIT: number;
+  GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT: number;
+  GOOGLE_PLACES_DAILY_BUDGET_BRL: number;
+  GOOGLE_PLACES_MONTHLY_BUDGET_BRL: number;
 }
 
 export function validateServerEnv(): ValidatedEnv {
@@ -76,7 +82,12 @@ export function validateServerEnv(): ValidatedEnv {
     ASAAS_WEBHOOK_URL: process.env.ASAAS_WEBHOOK_URL || '',
     APP_PUBLIC_URL: process.env.APP_PUBLIC_URL || 'https://roteiro.duo21.com.br',
     PUBLIC_APP_ORIGIN: process.env.PUBLIC_APP_ORIGIN || 'https://roteiro.duo21.com.br',
-    MAX_GENERATION_API_COST_BRL: isNaN(maxCost) ? 1.00 : maxCost
+    MAX_GENERATION_API_COST_BRL: isNaN(maxCost) ? 1.00 : maxCost,
+    GOOGLE_PLACES_ENABLED: process.env.GOOGLE_PLACES_ENABLED === 'true',
+    GOOGLE_PLACES_DAILY_REQUEST_LIMIT: Number(process.env.GOOGLE_PLACES_DAILY_REQUEST_LIMIT || 50),
+    GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT: Number(process.env.GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT || 500),
+    GOOGLE_PLACES_DAILY_BUDGET_BRL: Number(process.env.GOOGLE_PLACES_DAILY_BUDGET_BRL || 10.00),
+    GOOGLE_PLACES_MONTHLY_BUDGET_BRL: Number(process.env.GOOGLE_PLACES_MONTHLY_BUDGET_BRL || 100.00)
   };
 
   console.log(`[SERVER ENV] Mode: ${validated.NODE_ENV.toUpperCase()} | DATA_MODE: ${validated.DATA_MODE.toUpperCase()} | Max API Cost: R$${validated.MAX_GENERATION_API_COST_BRL.toFixed(2)}`);

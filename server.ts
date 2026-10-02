@@ -9,6 +9,7 @@ import { createAdminAuthMiddleware } from './src/server/adminAuth';
 import { supabaseServer } from './src/server/supabaseServer';
 import { TripAccessService } from './src/services/security/TripAccessService';
 import { googlePlacesServer } from './src/server/places/GooglePlacesServerProvider';
+import { googlePlacesCostGuard } from './src/server/costguard/GooglePlacesCostGuard';
 import { googleRoutesServer } from './src/server/routes/GoogleRoutesServerProvider';
 import { weatherServer } from './src/server/weather/WeatherServerProvider';
 import { asaasServerProvider } from './src/server/payment/AsaasServerProvider';
@@ -1800,6 +1801,102 @@ ${JSON.stringify(context || {})}`;
         cacheMisses: placesData.requests,
         hitRate: '0%'
       });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Sprint 10A Section 2 & 8: Smart Catalog Admin Endpoints
+  app.get('/api/admin/places', requireAdmin, async (req, res) => {
+    try {
+      const places = await supabaseServer.getAllPlacesForAdmin();
+      const metrics = await supabaseServer.getCatalogMetrics();
+      res.json({ places, metrics });
+    } catch (err: any) {
+      res.status(503).json({ code: 'DATABASE_UNAVAILABLE', error: err.message });
+    }
+  });
+
+  app.get('/api/admin/places/costguard', requireAdmin, (req, res) => {
+    try {
+      const metrics = googlePlacesCostGuard.getMetrics(googlePlacesServer.isConfigured());
+      res.json(metrics);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/admin/places/costguard', requireAdmin, (req, res) => {
+    try {
+      const updated = googlePlacesCostGuard.updateConfig(req.body);
+      const metrics = googlePlacesCostGuard.getMetrics(googlePlacesServer.isConfigured());
+      res.json({ success: true, config: updated, metrics });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/admin/places/:id', requireAdmin, async (req, res) => {
+    try {
+      const place = await supabaseServer.getPlaceById(req.params.id);
+      if (!place) {
+        res.status(404).json({ code: 'PLACE_NOT_FOUND', error: 'Local não encontrado' });
+        return;
+      }
+      res.json(place);
+    } catch (err: any) {
+      res.status(503).json({ code: 'DATABASE_UNAVAILABLE', error: err.message });
+    }
+  });
+
+  app.post('/api/admin/places', requireAdmin, async (req, res) => {
+    try {
+      const created = await supabaseServer.savePlace(req.body);
+      res.status(201).json(created);
+    } catch (err: any) {
+      res.status(500).json({ code: 'DATABASE_ERROR', error: err.message });
+    }
+  });
+
+  app.put('/api/admin/places/:id', requireAdmin, async (req, res) => {
+    try {
+      const updated = await supabaseServer.updatePlace(req.params.id, req.body);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(404).json({ code: 'PLACE_NOT_FOUND', error: err.message });
+    }
+  });
+
+  app.delete('/api/admin/places/:id', requireAdmin, async (req, res) => {
+    try {
+      const success = await supabaseServer.deactivatePlace(req.params.id);
+      res.json({ success });
+    } catch (err: any) {
+      res.status(500).json({ code: 'DATABASE_ERROR', error: err.message });
+    }
+  });
+
+  // Sprint 10A Section 7, 8, 9: Controlled Candidate Preview & Import from Google Places
+  app.post('/api/admin/places/:id/google-preview', requireAdmin, async (req, res) => {
+    try {
+      const localPlace = await supabaseServer.getPlaceById(req.params.id);
+      const query = req.body.query || (localPlace ? `${localPlace.name} ${localPlace.city}` : '');
+      const preview = await googlePlacesServer.previewPlaceFromGoogle(query, localPlace);
+      res.json(preview);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/admin/places/:id/google-import', requireAdmin, async (req, res) => {
+    try {
+      const { candidate, options } = req.body;
+      if (!candidate) {
+        res.status(400).json({ error: 'Candidato Google Places não informado.' });
+        return;
+      }
+      const updated = await googlePlacesServer.importPlaceFromGoogle(req.params.id, candidate, options || {});
+      res.json({ success: true, place: updated });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

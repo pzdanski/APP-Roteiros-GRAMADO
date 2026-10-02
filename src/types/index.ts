@@ -2,6 +2,7 @@ export type City = 'Gramado' | 'Canela' | 'Nova Petrópolis';
 
 export type PlaceCategory = 
   | 'parque' 
+  | 'atrativo'
   | 'restaurante' 
   | 'cafe' 
   | 'museu' 
@@ -10,7 +11,12 @@ export type PlaceCategory =
   | 'mirante' 
   | 'show' 
   | 'compras'
-  | 'noturno';
+  | 'noturno'
+  | 'hotel'
+  | 'pousada'
+  | 'resort'
+  | 'apartamento'
+  | 'cabana';
 
 export type IndoorType = 'indoor' | 'outdoor' | 'mixed' | 'rain_ok';
 
@@ -154,11 +160,19 @@ export interface DataSourceInfo {
   reliability_level: ConfidenceLevel;
 }
 
+export type MediaSource = 'duo21' | 'partner' | 'official' | 'google_places' | 'external_licensed' | 'fallback';
+
 export interface PlaceMedia {
+  id?: string;
   url: string;
   caption?: string;
   is_hero?: boolean;
+  is_logo?: boolean;
+  order?: number;
+  active?: boolean;
+  source?: MediaSource;
   video_url?: string;
+  uploaded_at?: string;
 }
 
 export interface Place {
@@ -242,6 +256,31 @@ export interface Place {
   coupon?: PlaceCoupon;
   verified_links?: PlaceVerifiedLink[];
   logo_url?: string;
+
+  // Sprint 10A Smart Catalog & Google Places Ready
+  official_url?: string;
+  instagram_url?: string;
+  maps_url?: string;
+  ticket_url?: string;
+  divulga_content_active?: boolean;
+  divulga_instagram_url?: string;
+  divulga_youtube_url?: string;
+  divulga_tiktok_url?: string;
+  divulga_content_title?: string;
+  google_last_sync_at?: string;
+  google_sync_status?: 'NOT_SYNCED' | 'RESOLVED' | 'ENRICHED' | 'FAILED' | 'CONFIG_REQUIRED';
+  google_data_version?: string;
+  price_notes?: string;
+  price_valid_from?: string;
+  price_valid_until?: string;
+  data_quality_label?: 'Completo' | 'Bom' | 'Incompleto' | 'Precisa atualização';
+  data_quality_score?: number;
+  daily_schedule?: Array<{
+    day: string;
+    isOpen: boolean;
+    openTime?: string;
+    closeTime?: string;
+  }>;
 }
 
 export interface PlaceVerifiedLink {
