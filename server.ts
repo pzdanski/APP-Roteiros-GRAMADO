@@ -13,6 +13,7 @@ import { googleRoutesServer } from './src/server/routes/GoogleRoutesServerProvid
 import { weatherServer } from './src/server/weather/WeatherServerProvider';
 import { asaasServerProvider } from './src/server/payment/AsaasServerProvider';
 import { PriceService } from './src/services/payment/PriceService';
+import { campaignService } from './src/services/payment/CampaignService';
 import { finalItineraryEngine } from './src/services/finalItineraryEngine';
 import { SEED_PLACES } from './src/data/seedData';
 import { DEFAULT_WEIGHTS } from './src/services/itineraryEngine';
@@ -664,9 +665,19 @@ ${JSON.stringify(context || {})}`;
   app.get(['/api/payments/pricing', '/api/payment/pricing'], (req, res) => {
     res.json({
       tiers: PriceService.getPricingTiers(),
-      defaultPrice: 19.90
+      officialStartingPrice: 29.90,
+      campaign: campaignService.getPublicStatus(),
+      defaultPrice: campaignService.isCampaignAvailable() ? campaignService.getConfig().priceBrl : 29.90
     });
   });
+
+  // Public Campaign Status (Sprint 9.2 Section 6: Zero sensitive customer data)
+  app.get(
+    ['/api/campaigns/launch-status', '/api/campaigns/status', '/api/campaign/status'],
+    (req, res) => {
+      res.json(campaignService.getPublicStatus());
+    }
+  );
 
   const handleCheckout = async (req: express.Request, res: express.Response) => {
     const {
@@ -747,10 +758,19 @@ ${JSON.stringify(context || {})}`;
           description: `Roteiro Inteligente DUO21 | ${priceCalculation.days} dias | Serra Gaúcha`
         });
 
+        const enrichedPaymentOrder = {
+          ...paymentOrder,
+          campaign_id: priceCalculation.campaignId || null,
+          official_price: priceCalculation.officialPriceBrl,
+          charged_price: authoritativePrice,
+          discount_amount: priceCalculation.discountBrl,
+          trip_days: priceCalculation.days
+        };
+
         // 3. Persist payment order in memory database & Supabase
-        orderDatabase.set(paymentOrder.id, paymentOrder);
+        orderDatabase.set(enrichedPaymentOrder.id, enrichedPaymentOrder);
         try {
-          await supabaseServer.savePaymentOrder(paymentOrder);
+          await supabaseServer.savePaymentOrder(enrichedPaymentOrder);
         } catch (dbErr) {
           console.warn('[Checkout] Warning persisting payment order to Supabase:', dbErr);
         }
@@ -763,6 +783,10 @@ ${JSON.stringify(context || {})}`;
             orderId: paymentOrder.id,
             tripId: targetTripId,
             amountBrl: authoritativePrice,
+            officialPriceBrl: priceCalculation.officialPriceBrl,
+            discountBrl: priceCalculation.discountBrl,
+            campaignId: priceCalculation.campaignId,
+            tripDays: priceCalculation.days,
             paymentMethod,
             asaasPaymentId: paymentOrder.asaas_payment_id,
             status: paymentOrder.status
@@ -1008,9 +1032,30 @@ ${JSON.stringify(context || {})}`;
         }
       }
 
+      let campaignRedemption: any = null;
       if (targetOrder) {
         targetOrder.status = 'PAID';
         targetOrder.paid_at = new Date().toISOString();
+
+        // Sprint 9.2 Section 2 & 3: Record Campaign Redemption for Paid Orders
+        if (targetOrder.campaign_id === 'launch_300' || targetOrder.amount_brl === 19.90) {
+          const tripDays = targetOrder.trip_days || 4;
+          const officialPrice = targetOrder.official_price || PriceService.calculateOfficialPrice(tripDays);
+
+          campaignRedemption = await campaignService.recordConfirmedPayment({
+            orderId: targetOrder.id,
+            paymentId: webhookResult.paymentId || targetOrder.asaas_payment_id || targetOrder.id,
+            amountBrl: targetOrder.amount_brl || 19.90,
+            officialPriceBrl: officialPrice,
+            tripDays
+          });
+
+          if (campaignRedemption.success && campaignRedemption.slotNumber) {
+            targetOrder.campaign_slot = campaignRedemption.slotNumber;
+            targetOrder.campaign_id = 'launch_300';
+          }
+        }
+
         orderDatabase.set(targetOrder.id, targetOrder);
         try {
           await supabaseServer.savePaymentOrder(targetOrder);
@@ -1036,6 +1081,22 @@ ${JSON.stringify(context || {})}`;
         },
         created_at: new Date().toISOString()
       });
+
+      if (campaignRedemption?.success) {
+        paymentEvents.push({
+          id: `evt_camp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          type: 'CAMPAIGN_REDEMPTION',
+          payload: {
+            campaignId: 'launch_300',
+            slotNumber: campaignRedemption.slotNumber,
+            orderId: targetOrder?.id,
+            paymentId: webhookResult.paymentId,
+            amountBrl: targetOrder?.amount_brl || 19.90,
+            tripDays: targetOrder?.trip_days || 4
+          },
+          created_at: new Date().toISOString()
+        });
+      }
 
       if (targetTripId) {
         unlockedTrip = await singleFlight.do(`generate:${targetTripId}`, async () => {
@@ -1752,6 +1813,34 @@ ${JSON.stringify(context || {})}`;
 
   app.get('/api/admin/sources', requireAdmin, (req, res) => {
     res.json(supabaseServer.getSources());
+  });
+
+  // Sprint 9.2 Section 9 & 10: Admin Campaign Management & Commercial Analytics
+  app.get('/api/admin/campaign', requireAdmin, (req, res) => {
+    res.json(campaignService.getAdminMetrics());
+  });
+
+  app.post('/api/admin/campaign/update', requireAdmin, (req, res) => {
+    const { active, maxRedemptions, priceBrl, name } = req.body;
+    const updated = campaignService.updateCampaign({
+      active,
+      maxRedemptions,
+      priceBrl,
+      name
+    });
+    res.json({
+      success: true,
+      campaign: updated,
+      adminMetrics: campaignService.getAdminMetrics()
+    });
+  });
+
+  app.post('/api/admin/campaign/reset', requireAdmin, (req, res) => {
+    campaignService.resetForTest();
+    res.json({
+      success: true,
+      adminMetrics: campaignService.getAdminMetrics()
+    });
   });
 
   // -------------------------------------------------------------------------

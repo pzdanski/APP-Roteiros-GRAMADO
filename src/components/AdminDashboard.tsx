@@ -48,7 +48,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onApproveReport,
   onRejectReport
 }) => {
-  const [activeTab, setActiveTab] = useState<'apps' | 'apis' | 'webhooks' | 'metrics' | 'places' | 'events' | 'reports' | 'weights' | 'integrations' | 'trip_audit'>('apps');
+  const [activeTab, setActiveTab] = useState<'apps' | 'apis' | 'webhooks' | 'metrics' | 'places' | 'events' | 'reports' | 'weights' | 'integrations' | 'trip_audit' | 'campaign'>('apps');
   const [places, setPlaces] = useState<Place[]>(SEED_PLACES);
   const [events, setEvents] = useState<SerraEvent[]>(SEED_EVENTS);
   const [weights, setWeights] = useState<EngineWeights>(DEFAULT_WEIGHTS);
@@ -56,6 +56,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [providerStatuses, setProviderStatuses] = useState<RegisteredProviderStatus[]>(providerRegistry.getStatuses());
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null);
   const [liveUsage, setLiveUsage] = useState<any>(null);
+
+  // Sprint 9.2 Section 9 & 10: Campaign Management & Commercial Analytics State
+  const [adminApiKey, setAdminApiKey] = useState<string>(() => {
+    return localStorage.getItem('duo21_admin_key') || 'duo21-dev-admin-secret-key-change-in-prod';
+  });
+  const [campaignData, setCampaignData] = useState<any>(null);
+  const [campaignLoading, setCampaignLoading] = useState(false);
+  const [campaignError, setCampaignError] = useState<string | null>(null);
+  const [editPrice, setEditPrice] = useState<number>(19.90);
+  const [editLimit, setEditLimit] = useState<number>(300);
+  const [campaignUpdating, setCampaignUpdating] = useState(false);
+  const [campaignSuccessMsg, setCampaignSuccessMsg] = useState<string | null>(null);
 
   // Live operational data for DUO21 CMS modules (Sprint 8C)
   const [healthData, setHealthData] = useState<any>(null);
@@ -81,9 +93,96 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
   };
 
+  const fetchCampaignMetrics = React.useCallback(async () => {
+    setCampaignLoading(true);
+    setCampaignError(null);
+    try {
+      const res = await fetch('/api/admin/campaign', {
+        headers: {
+          'x-admin-key': adminApiKey
+        }
+      });
+      if (!res.ok) {
+        // Fallback to public status if unauthorized
+        const pub = await fetch('/api/campaigns/launch-status').then(r => r.json());
+        setCampaignData({
+          campaign: {
+            id: pub.campaign_id,
+            name: pub.campaign_name,
+            priceBrl: pub.campaign_price,
+            maxRedemptions: pub.max_redemptions,
+            remaining_redemptions: pub.remaining_redemptions,
+            redemptions_count: pub.max_redemptions - pub.remaining_redemptions,
+            active: pub.active,
+            status: pub.is_available ? 'ACTIVE' : (pub.remaining_redemptions === 0 ? 'EXHAUSTED' : 'INACTIVE'),
+            startDate: '2026-10-01T00:00:00.000Z',
+            endDate: null,
+            officialStartingPrice: pub.official_starting_price
+          },
+          metrics: {
+            total_campaign_orders_paid: pub.max_redemptions - pub.remaining_redemptions,
+            total_campaign_revenue_brl: (pub.max_redemptions - pub.remaining_redemptions) * pub.campaign_price,
+            average_ticket_brl: pub.campaign_price,
+            total_promotional_discount_brl: (pub.max_redemptions - pub.remaining_redemptions) * (pub.official_starting_price - pub.campaign_price)
+          }
+        });
+        if (res.status === 401) {
+          setCampaignError('Autenticado em modo restrito. Insira a chave administrativa para editar.');
+        }
+      } else {
+        const data = await res.json();
+        setCampaignData(data);
+        if (data.campaign) {
+          setEditPrice(data.campaign.priceBrl);
+          setEditLimit(data.campaign.maxRedemptions);
+        }
+      }
+    } catch (err: any) {
+      setCampaignError(err.message || 'Erro ao carregar dados da campanha');
+    } finally {
+      setCampaignLoading(false);
+    }
+  }, [adminApiKey]);
+
+  const handleUpdateCampaign = async (updates: { active?: boolean; maxRedemptions?: number; priceBrl?: number; name?: string }) => {
+    setCampaignUpdating(true);
+    setCampaignSuccessMsg(null);
+    setCampaignError(null);
+    try {
+      const res = await fetch('/api/admin/campaign/update', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': adminApiKey
+        },
+        body: JSON.stringify(updates)
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Falha ao atualizar campanha');
+      }
+      const data = await res.json();
+      if (data.adminMetrics) {
+        setCampaignData(data.adminMetrics);
+      }
+      setCampaignSuccessMsg('Configurações da campanha atualizadas com sucesso!');
+      setTimeout(() => setCampaignSuccessMsg(null), 3000);
+    } catch (err: any) {
+      setCampaignError(err.message || 'Erro ao atualizar campanha');
+    } finally {
+      setCampaignUpdating(false);
+    }
+  };
+
   React.useEffect(() => {
     fetchHealthAndWebhook();
   }, []);
+
+  React.useEffect(() => {
+    if (activeTab === 'campaign') {
+      fetchCampaignMetrics();
+    }
+  }, [activeTab, fetchCampaignMetrics]);
 
   // Mock initial business telemetry
   const metrics: AdminMetrics = {
@@ -149,6 +248,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             { id: 'apis', label: 'APIs', icon: Server },
             { id: 'webhooks', label: 'Webhooks', icon: Radio },
             { id: 'metrics', label: 'Analytics', icon: BarChart3 },
+            { id: 'campaign', label: 'Campanha 300', icon: DollarSign },
             { id: 'integrations', label: 'Integrações', icon: Wifi },
             { id: 'weights', label: 'Configurações', icon: Sliders },
             { id: 'places', label: 'Locais & Preços', icon: MapPin },
@@ -1035,6 +1135,324 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <p className="text-xs text-[#64748B]">
                 Caso a previsão meteorológica aponte chuva forte (HEAVY_RAIN ou tempestade), o motor substitui automaticamente passeios abertos por atrações cobertas (Snowland, Mundo de Chocolate, museus temáticos), registrando <code className="text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded font-mono">consumed_quota: false</code>.
               </p>
+            </div>
+          </div>
+        )}
+
+        {/* Sprint 9.2 Section 9 & 10: CAMPAIGN TAB */}
+        {activeTab === 'campaign' && (
+          <div className="space-y-4">
+            {/* Header Card */}
+            <div className="bg-white p-5 rounded-2xl border border-[#E7DFCE] shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-[#E7DFCE]">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="p-2 bg-emerald-50 text-emerald-800 rounded-xl">
+                      <DollarSign className="w-5 h-5" />
+                    </span>
+                    <div>
+                      <h3 className="text-base font-extrabold text-[#1B4332]">
+                        Lançamento — Primeiros 300 Roteiros
+                      </h3>
+                      <p className="text-xs text-[#64748B]">
+                        Campanha comercial automática (launch_300) • Expira automaticamente ao atingir 300 pagamentos
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`px-3 py-1 rounded-full text-xs font-extrabold tracking-wide uppercase ${
+                      campaignData?.campaign?.status === 'ACTIVE'
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                        : campaignData?.campaign?.status === 'EXHAUSTED'
+                        ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                        : 'bg-rose-100 text-rose-800 border border-rose-300'
+                    }`}
+                  >
+                    {campaignData?.campaign?.status === 'ACTIVE'
+                      ? '● Ativa'
+                      : campaignData?.campaign?.status === 'EXHAUSTED'
+                      ? '● Esgotada'
+                      : '● Inativa'}
+                  </span>
+                  <button
+                    onClick={fetchCampaignMetrics}
+                    disabled={campaignLoading}
+                    className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition-colors"
+                    title="Atualizar dados"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${campaignLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Success / Error alerts */}
+              {campaignSuccessMsg && (
+                <div className="mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-xs text-emerald-800 font-bold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{campaignSuccessMsg}</span>
+                </div>
+              )}
+              {campaignError && (
+                <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2 text-xs text-amber-800">
+                  <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>{campaignError}</span>
+                </div>
+              )}
+
+              {/* Key Indicators Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+                <div className="p-3 bg-[#FAF9F6] rounded-xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">
+                    Preço Promocional
+                  </span>
+                  <span className="text-xl font-extrabold text-[#1B4332] block mt-0.5">
+                    R$ {Number(campaignData?.campaign?.priceBrl || 19.90).toFixed(2).replace('.', ',')}
+                  </span>
+                  <span className="text-[10px] text-[#64748B]">Tabela: a partir de R$ 29,90</span>
+                </div>
+
+                <div className="p-3 bg-[#FAF9F6] rounded-xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">
+                    Limite da Campanha
+                  </span>
+                  <span className="text-xl font-extrabold text-[#1B4332] block mt-0.5">
+                    {campaignData?.campaign?.maxRedemptions || 300}
+                  </span>
+                  <span className="text-[10px] text-[#64748B]">vagas elegíveis</span>
+                </div>
+
+                <div className="p-3 bg-[#FAF9F6] rounded-xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">
+                    Vagas Utilizadas
+                  </span>
+                  <span className="text-xl font-extrabold text-blue-700 block mt-0.5">
+                    {campaignData?.campaign?.redemptions_count ?? 0}
+                  </span>
+                  <span className="text-[10px] text-[#64748B]">pagamentos confirmados</span>
+                </div>
+
+                <div className="p-3 bg-[#FAF9F6] rounded-xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">
+                    Vagas Restantes
+                  </span>
+                  <span className="text-xl font-extrabold text-emerald-700 block mt-0.5">
+                    {campaignData?.campaign?.remaining_redemptions ?? 300}
+                  </span>
+                  <span className="text-[10px] text-[#64748B]">disponíveis</span>
+                </div>
+              </div>
+
+              {/* Progress Bar */}
+              <div className="mt-4 space-y-1.5">
+                <div className="flex justify-between text-xs text-[#64748B]">
+                  <span>Progresso do Lançamento</span>
+                  <span className="font-bold text-[#1B4332]">
+                    {Math.round(
+                      ((campaignData?.campaign?.redemptions_count || 0) /
+                        (campaignData?.campaign?.maxRedemptions || 300)) *
+                        100
+                    )}
+                    % preenchido
+                  </span>
+                </div>
+                <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                  <div
+                    className="h-full bg-[#1B4332] rounded-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        ((campaignData?.campaign?.redemptions_count || 0) /
+                          (campaignData?.campaign?.maxRedemptions || 300)) *
+                          100
+                      )}%`
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Details & Dates */}
+              <div className="mt-4 pt-3 border-t border-[#E7DFCE] grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-[#64748B]">
+                <div>
+                  <span className="font-semibold text-[#1E293B]">Data de Início:</span>{' '}
+                  {campaignData?.campaign?.startDate
+                    ? new Date(campaignData.campaign.startDate).toLocaleDateString('pt-BR')
+                    : '01/10/2026'}
+                </div>
+                <div>
+                  <span className="font-semibold text-[#1E293B]">Data de Término:</span>{' '}
+                  {campaignData?.campaign?.endDate
+                    ? new Date(campaignData.campaign.endDate).toLocaleDateString('pt-BR')
+                    : 'Automático após 300 pagamentos confirmados'}
+                </div>
+              </div>
+            </div>
+
+            {/* Section 10: Commercial Analytics Card */}
+            <div className="bg-white p-5 rounded-2xl border border-[#E7DFCE] shadow-xs space-y-3">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-emerald-700" />
+                <h4 className="text-xs font-bold uppercase tracking-wider text-[#1B4332]">
+                  Analytics Comercial da Campanha
+                </h4>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-3 bg-emerald-50/50 rounded-xl border border-emerald-100">
+                  <span className="text-[10px] text-emerald-900 font-bold block uppercase">
+                    Roteiros Vendidos
+                  </span>
+                  <span className="text-lg font-black text-emerald-950 mt-1 block">
+                    {campaignData?.metrics?.total_campaign_orders_paid ?? 0}
+                  </span>
+                  <span className="text-[10px] text-emerald-800">pedidos pagos</span>
+                </div>
+
+                <div className="p-3 bg-emerald-50/50 rounded-xl border border-emerald-100">
+                  <span className="text-[10px] text-emerald-900 font-bold block uppercase">
+                    Receita da Campanha
+                  </span>
+                  <span className="text-lg font-black text-emerald-950 mt-1 block">
+                    R$ {Number(campaignData?.metrics?.total_campaign_revenue_brl ?? 0).toFixed(2).replace('.', ',')}
+                  </span>
+                  <span className="text-[10px] text-emerald-800">faturamento bruto</span>
+                </div>
+
+                <div className="p-3 bg-emerald-50/50 rounded-xl border border-emerald-100">
+                  <span className="text-[10px] text-emerald-900 font-bold block uppercase">
+                    Ticket Médio
+                  </span>
+                  <span className="text-lg font-black text-emerald-950 mt-1 block">
+                    R$ {Number(campaignData?.metrics?.average_ticket_brl ?? 19.90).toFixed(2).replace('.', ',')}
+                  </span>
+                  <span className="text-[10px] text-emerald-800">por roteiro pago</span>
+                </div>
+
+                <div className="p-3 bg-emerald-50/50 rounded-xl border border-emerald-100">
+                  <span className="text-[10px] text-emerald-900 font-bold block uppercase">
+                    Economia Concedida
+                  </span>
+                  <span className="text-lg font-black text-emerald-950 mt-1 block">
+                    R$ {Number(campaignData?.metrics?.total_promotional_discount_brl ?? 0).toFixed(2).replace('.', ',')}
+                  </span>
+                  <span className="text-[10px] text-emerald-800">desconto promocional</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Admin Management Controls (Sprint 9.2 Section 9: Protected by admin auth) */}
+            <div className="bg-white p-5 rounded-2xl border border-[#E7DFCE] shadow-xs space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-[#E7DFCE]">
+                <div className="flex items-center gap-2">
+                  <Sliders className="w-4 h-4 text-emerald-700" />
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-[#1B4332]">
+                    Gerenciamento Administrativo (Control Plane)
+                  </h4>
+                </div>
+                <span className="text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                  Protegido via API Key
+                </span>
+              </div>
+
+              {/* Admin Key Configuration */}
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                <label className="block text-xs font-bold text-slate-700">
+                  Chave Administrativa (x-admin-key)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={adminApiKey}
+                    onChange={(e) => {
+                      setAdminApiKey(e.target.value);
+                      localStorage.setItem('duo21_admin_key', e.target.value);
+                    }}
+                    placeholder="Insira a chave admin"
+                    className="flex-1 px-3 py-2 text-xs bg-white rounded-xl border border-slate-300 font-mono outline-none focus:border-emerald-600"
+                  />
+                  <button
+                    onClick={fetchCampaignMetrics}
+                    className="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl text-xs font-bold cursor-pointer"
+                  >
+                    Validar
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* Toggle Active/Inactive */}
+                <div className="p-3 bg-[#FAF9F6] rounded-xl border border-[#E7DFCE] flex flex-col justify-between space-y-2">
+                  <div>
+                    <span className="text-xs font-bold text-[#1E293B] block">Status da Campanha</span>
+                    <span className="text-[11px] text-[#64748B]">
+                      {campaignData?.campaign?.active ? 'Campanha está ativa' : 'Campanha está pausada'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => handleUpdateCampaign({ active: !campaignData?.campaign?.active })}
+                    disabled={campaignUpdating}
+                    className={`w-full py-2 px-3 rounded-xl text-xs font-bold text-white transition-colors cursor-pointer ${
+                      campaignData?.campaign?.active
+                        ? 'bg-amber-600 hover:bg-amber-700'
+                        : 'bg-emerald-700 hover:bg-emerald-800'
+                    }`}
+                  >
+                    {campaignData?.campaign?.active ? 'Desativar Campanha' : 'Ativar Campanha'}
+                  </button>
+                </div>
+
+                {/* Change Promotional Price */}
+                <div className="p-3 bg-[#FAF9F6] rounded-xl border border-[#E7DFCE] flex flex-col justify-between space-y-2">
+                  <div>
+                    <span className="text-xs font-bold text-[#1E293B] block">Preço Promocional (R$)</span>
+                    <span className="text-[11px] text-[#64748B]">Valor cobrado na campanha</span>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="number"
+                      step="0.10"
+                      min="1"
+                      value={editPrice}
+                      onChange={(e) => setEditPrice(parseFloat(e.target.value) || 19.90)}
+                      className="w-24 px-2 py-1.5 text-xs bg-white rounded-lg border border-slate-300 font-bold"
+                    />
+                    <button
+                      onClick={() => handleUpdateCampaign({ priceBrl: editPrice })}
+                      disabled={campaignUpdating}
+                      className="flex-1 py-1.5 px-2.5 bg-[#1B4332] hover:bg-[#2D6A4F] text-white text-xs font-bold rounded-lg cursor-pointer"
+                    >
+                      Salvar
+                    </button>
+                  </div>
+                </div>
+
+                {/* Change Limit */}
+                <div className="p-3 bg-[#FAF9F6] rounded-xl border border-[#E7DFCE] flex flex-col justify-between space-y-2">
+                  <div>
+                    <span className="text-xs font-bold text-[#1E293B] block">Limite de Vagas</span>
+                    <span className="text-[11px] text-[#64748B]">Máximo de pedidos elegíveis</span>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      value={editLimit}
+                      onChange={(e) => setEditLimit(parseInt(e.target.value, 10) || 300)}
+                      className="w-24 px-2 py-1.5 text-xs bg-white rounded-lg border border-slate-300 font-bold"
+                    />
+                    <button
+                      onClick={() => handleUpdateCampaign({ maxRedemptions: editLimit })}
+                      disabled={campaignUpdating}
+                      className="flex-1 py-1.5 px-2.5 bg-[#1B4332] hover:bg-[#2D6A4F] text-white text-xs font-bold rounded-lg cursor-pointer"
+                    >
+                      Salvar
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}

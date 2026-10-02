@@ -33,8 +33,12 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 }) => {
   const preferences = preview?.preferences || trip?.preferences;
   const daysCount = preview?.total_days || trip?.days?.length || 4;
-  const calculatedPrice = PriceService.calculatePrice(daysCount);
-  const priceBrl = preview?.price_brl || trip?.price_brl || calculatedPrice;
+  const priceDetail = PriceService.calculatePriceFromDates(
+    preferences?.start_date,
+    preferences?.end_date,
+    daysCount
+  );
+  const priceBrl = preview?.price_brl || trip?.price_brl || priceDetail.priceBrl;
   const tripId = trip?.id || preview?.id || `trip_${Date.now()}`;
   const secureToken = trip?.secure_token || `tok_${Math.random().toString(36).substring(2, 9)}`;
 
@@ -177,22 +181,42 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-5 space-y-4">
-          {/* Summary Box */}
-          <div className="bg-[#FAF9F6] p-3.5 rounded-2xl border border-[#E7DFCE] flex items-center justify-between">
-            <div>
+          {/* Summary Box with Sprint 9.2 Section 7 Presentation */}
+          <div className="bg-[#FAF9F6] p-4 rounded-2xl border border-[#E7DFCE] flex items-center justify-between">
+            <div className="space-y-1">
               <span className="text-xs font-bold text-[#1E293B] block">
-                Roteiro {daysCount} Dias (Serra Gaúcha)
+                Roteiro personalizado • {daysCount} {daysCount === 1 ? 'dia' : 'dias'}
               </span>
-              <span className="text-[11px] text-[#64748B]">
+              <span className="text-[11px] text-[#64748B] block">
                 Gramado, Canela e Nova Petrópolis
               </span>
+              {priceDetail.isPromotional && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 text-[10px] font-bold uppercase tracking-wider">
+                  <Sparkles className="w-3 h-3 text-amber-700" />
+                  Oferta de lançamento
+                </span>
+              )}
             </div>
 
-            <div className="text-right">
-              <span className="text-lg font-black text-[#1B4332]">
-                R$ {priceBrl.toFixed(2).replace('.', ',')}
-              </span>
-              <span className="text-[10px] text-[#7A6F5D] block">Pagamento único</span>
+            <div className="text-right space-y-0.5">
+              {priceDetail.isPromotional ? (
+                <>
+                  <span className="text-xs text-slate-400 line-through block">
+                    De R$ {priceDetail.officialPriceBrl.toFixed(2).replace('.', ',')}
+                  </span>
+                  <span className="text-lg font-black text-[#1B4332] block">
+                    Por R$ {priceDetail.priceBrl.toFixed(2).replace('.', ',')}
+                  </span>
+                  <span className="text-[10px] text-[#7A6F5D] block">Pagamento único</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-lg font-black text-[#1B4332] block">
+                    R$ {priceDetail.priceBrl.toFixed(2).replace('.', ',')}
+                  </span>
+                  <span className="text-[10px] text-[#7A6F5D] block">Pagamento único</span>
+                </>
+              )}
             </div>
           </div>
 

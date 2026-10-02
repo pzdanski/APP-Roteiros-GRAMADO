@@ -26,6 +26,34 @@ export const LandingView: React.FC<LandingViewProps> = ({
   onOpenRecovery
 }) => {
   const [imgError, setImgError] = React.useState(false);
+  const [campaignStatus, setCampaignStatus] = React.useState<{
+    active: boolean;
+    campaign_price: number;
+    official_starting_price: number;
+    max_redemptions: number;
+    remaining_redemptions: number;
+    is_available: boolean;
+  }>({
+    active: true,
+    campaign_price: 19.90,
+    official_starting_price: 29.90,
+    max_redemptions: 300,
+    remaining_redemptions: 300,
+    is_available: true
+  });
+
+  React.useEffect(() => {
+    fetch('/api/campaigns/launch-status')
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (data && typeof data.is_available === 'boolean') {
+          setCampaignStatus(data);
+        }
+      })
+      .catch(() => {
+        // Safe graceful fallback
+      });
+  }, []);
 
   const handleStart = () => {
     trackEvent('start_trip');
@@ -91,15 +119,37 @@ export const LandingView: React.FC<LandingViewProps> = ({
           <ArrowRight className="w-5 h-5" />
         </button>
 
-        <div className="flex flex-wrap items-center justify-center gap-1.5 text-xs text-[#7A6F5D] font-medium leading-tight">
-          <span className="whitespace-nowrap">
-            A partir de <strong className="font-extrabold text-sm text-[#1B4332]">R$ 19,90</strong>
-          </span>
-          <span>•</span>
-          <span className="whitespace-nowrap font-semibold text-[#1B4332]">
-            Acesso imediato
-          </span>
-        </div>
+        {/* Section 5 & 6: Launch Offer or Official Starting Price */}
+        {campaignStatus.is_available ? (
+          <div className="bg-[#FAF9F6] border border-[#E7DFCE] rounded-2xl p-3 space-y-1.5">
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px] font-extrabold uppercase tracking-wider">
+              <Sparkles className="w-3 h-3 text-amber-700" />
+              Oferta de Lançamento
+            </div>
+            <p className="text-xs font-bold text-[#1B4332]">
+              Primeiros 300 roteiros por R$ 19,90
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-1.5 text-[11px] text-[#7A6F5D]">
+              <span className="line-through text-slate-400">
+                A partir de R$ 29,90
+              </span>
+              <span>•</span>
+              <span className="font-semibold text-emerald-800">
+                Oferta válida para os primeiros 300 roteiros.
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-center gap-1.5 text-xs text-[#7A6F5D] font-medium leading-tight">
+            <span className="whitespace-nowrap">
+              A partir de <strong className="font-extrabold text-sm text-[#1B4332]">R$ 29,90</strong>
+            </span>
+            <span>•</span>
+            <span className="whitespace-nowrap font-semibold text-[#1B4332]">
+              Acesso imediato
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Featured Photo Preview */}

@@ -28,13 +28,16 @@ async function runSprint7Tests() {
   assert(PriceService.calculatePrice(1) === 19.90, '1 dia custa R$ 19,90');
   assert(PriceService.calculatePrice(4) === 19.90, '4 dias custa R$ 19,90');
   assert(PriceService.calculatePrice(7) === 19.90, '7 dias custa R$ 19,90');
-  assert(PriceService.calculatePrice(8) === 24.90, '8 dias custa R$ 24,90');
-  assert(PriceService.calculatePrice(10) === 24.90, '10 dias custa R$ 24,90');
-  assert(PriceService.calculatePrice(11) === 29.90, '11 dias custa R$ 29,90');
-  assert(PriceService.calculatePrice(14) === 29.90, '14 dias custa R$ 29,90');
-  assert(PriceService.calculatePrice(15) === 39.90, '15 dias custa R$ 39,90');
-  assert(PriceService.calculatePrice(21) === 39.90, '21 dias custa R$ 39,90');
-  assert(PriceService.calculatePrice(22) === 49.90, 'Mais de 21 dias aplica teto R$ 49,90');
+  assert(PriceService.calculatePrice(8) === 19.90, '8 dias custa R$ 19,90 (campanha)');
+  assert(PriceService.calculatePrice(10) === 19.90, '10 dias custa R$ 19,90 (campanha)');
+  assert(PriceService.calculatePrice(11) === 19.90, '11 dias custa R$ 19,90 (campanha)');
+  assert(PriceService.calculatePrice(14) === 19.90, '14 dias custa R$ 19,90 (campanha)');
+  assert(PriceService.calculatePrice(15) === 19.90, '15 dias custa R$ 19,90 (campanha)');
+  assert(PriceService.calculatePrice(21) === 19.90, '21 dias custa R$ 19,90 (campanha)');
+  assert(PriceService.calculateOfficialPrice(8) === 49.90, '8 dias oficial custa R$ 49,90');
+  assert(PriceService.calculateOfficialPrice(11) === 59.90, '11 dias oficial custa R$ 59,90');
+  assert(PriceService.calculateOfficialPrice(15) === 79.90, '15 dias oficial custa R$ 79,90');
+  assert(PriceService.calculateOfficialPrice(22) === 99.90, 'Mais de 21 dias aplica R$ 99,90');
 
   const dateCalc = PriceService.calculatePriceFromDates('2026-10-10', '2026-10-13');
   assert(dateCalc.days === 4 && dateCalc.priceBrl === 19.90, 'Cálculo de preço por datas (10/10 a 13/10 = 4 dias / R$ 19,90)');

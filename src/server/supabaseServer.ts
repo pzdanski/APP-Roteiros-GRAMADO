@@ -675,6 +675,12 @@ export const supabaseServer = {
       pix_qr_code: order.pix_qr_code || null,
       pix_copy_paste: order.pix_copy_paste || null,
       is_sandbox: Boolean(order.is_sandbox),
+      campaign_id: order.campaign_id || null,
+      campaign_slot: order.campaign_slot || null,
+      official_price: order.official_price ? Number(order.official_price) : null,
+      charged_price: order.charged_price ? Number(order.charged_price) : Number(order.amount_brl || 0),
+      discount_amount: order.discount_amount ? Number(order.discount_amount) : 0,
+      trip_days: order.trip_days ? Number(order.trip_days) : null,
       paid_at: order.paid_at || null,
       created_at: order.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()

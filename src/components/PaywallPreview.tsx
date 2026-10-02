@@ -43,8 +43,12 @@ export const PaywallPreview: React.FC<PaywallPreviewProps> = ({
   const preferences = preview?.preferences || trip?.preferences;
   const daysCount = preview?.total_days || trip?.days?.length || 4;
   const firstName = preferences?.name ? safeText(preferences.name.split(' ')[0], 'Viajante') : 'Viajante';
-  const calculatedPrice = PriceService.calculatePrice(daysCount);
-  const priceBrl = preview?.price_brl || trip?.price_brl || calculatedPrice;
+  const priceDetail = PriceService.calculatePriceFromDates(
+    preferences?.start_date,
+    preferences?.end_date,
+    daysCount
+  );
+  const priceBrl = preview?.price_brl || trip?.price_brl || priceDetail.priceBrl;
 
   const handleUnlock = () => {
     if (typeof onUnlockTrip === 'function') {
@@ -379,9 +383,14 @@ export const PaywallPreview: React.FC<PaywallPreviewProps> = ({
         <div className="max-w-md mx-auto flex items-center justify-between gap-3">
           <div>
             <span className="text-[10px] text-[#64748B] uppercase font-bold block">
-              Investimento Único
+              {priceDetail.isPromotional ? 'Oferta de Lançamento' : 'Investimento Único'}
             </span>
-            <div className="flex items-baseline gap-1">
+            <div className="flex items-baseline gap-1.5">
+              {priceDetail.isPromotional && (
+                <span className="text-xs text-slate-400 line-through">
+                  {formatSafeBrl(priceDetail.officialPriceBrl)}
+                </span>
+              )}
               <span className="text-lg font-black text-[#1B4332]">
                 {formatSafeBrl(priceBrl)}
               </span>
