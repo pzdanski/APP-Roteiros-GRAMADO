@@ -5,13 +5,6 @@ import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
 import { calculatePlaceDataQuality } from '../utils/dataQuality';
 import { PlaceCategory } from '../types';
 
-export function toDeterministicUuid(id: string): string {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  if (uuidRegex.test(id)) return id;
-  const hash = crypto.createHash('md5').update(id).digest('hex');
-  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
-}
-
 export const PLACE_UUID_MAP: Record<string, string> = {
   'lago-negro': 'a0000001-0000-0000-0000-000000000001',
   'plc-gra-01': 'a0000001-0000-0000-0000-000000000001',
@@ -53,9 +46,38 @@ export const PLACE_UUID_MAP: Record<string, string> = {
   'alpen-park': 'a0000001-0000-0000-0000-000000000009',
   'plc-can-04': 'a0000001-0000-0000-0000-000000000009',
   'ninho-das-aguias': 'a0000001-0000-0000-0000-000000000011',
-  'plc-nvp-03': 'a0000001-0000-0000-0000-000000000011',
   'hotel-casa-da-montanha': 'c0000001-0000-0000-0000-000000000001'
 };
+
+export function toDeterministicUuid(id: string): string {
+  if (!id) return 'a0000001-0000-0000-0000-000000000001';
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (uuidRegex.test(id)) return id;
+  if (PLACE_UUID_MAP[id]) return PLACE_UUID_MAP[id];
+  const hash = crypto.createHash('md5').update(id).digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
+
+// Whitelist of valid columns for the public.places PostgreSQL table
+// Note: 'media' is strictly isolated in public.place_media_items and MUST NOT be sent to places
+export const VALID_PLACE_COLUMNS = new Set([
+  'id', 'name', 'slug', 'city', 'state', 'country',
+  'category_id', 'subcategory', 'latitude', 'longitude', 'address',
+  'google_place_id', 'description_short', 'description_internal',
+  'duration_min', 'duration_max', 'indoor_outdoor',
+  'suitable_for_children', 'age_min', 'age_max', 'accessibility',
+  'pet_friendly', 'reservation_required', 'cost_level',
+  'estimated_cost_min', 'estimated_cost_max', 'cost_per_person',
+  'official_website', 'instagram', 'whatsapp', 'partner',
+  'divulga_lugares_recommended', 'divulga_lugares_tip', 'active',
+  'is_demo', 'source_id', 'checked_at', 'confidence', 'created_at', 'updated_at',
+  'official_url', 'instagram_url', 'maps_url', 'ticket_url', 'phone',
+  'divulga_content_active', 'divulga_instagram_url', 'divulga_youtube_url',
+  'divulga_tiktok_url', 'divulga_article_url', 'divulga_content_title',
+  'google_last_sync_at', 'google_sync_status', 'google_data_version',
+  'price_notes', 'price_valid_from', 'price_valid_until',
+  'data_quality_label', 'data_quality_score', 'always_open'
+]);
 
 export function resolvePlaceUuid(id?: string, slug?: string): string {
   if (id && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
@@ -245,8 +267,110 @@ export const supabaseServer = {
   },
 
   // ---------------------------------------------------------------------------
-  // Places
+  // Places & Media Isolation
   // ---------------------------------------------------------------------------
+  async getAllActiveMediaMap(): Promise<Record<string, any[]>> {
+    const map: Record<string, any[]> = {};
+    if (env.DATA_MODE === 'mock' || !serverClient) return map;
+
+    try {
+      const { data, error } = await serverClient
+        .from('place_media_items')
+        .select('*')
+        .eq('active', true)
+        .order('is_hero', { ascending: false })
+        .order('display_order', { ascending: true });
+
+      if (error) {
+        console.warn('[place_media_items] batch load warning:', error.message);
+        return map;
+      }
+
+      if (data && data.length > 0) {
+        for (const row of data) {
+          const pid = row.place_id;
+          if (!map[pid]) map[pid] = [];
+          map[pid].push({
+            id: row.id,
+            url: row.url,
+            thumbnail_url: row.thumbnail_url || row.url,
+            card_url: row.card_url || row.url,
+            width: row.width || undefined,
+            height: row.height || undefined,
+            caption: row.caption || undefined,
+            is_hero: Boolean(row.is_hero),
+            is_logo: Boolean(row.is_logo),
+            order: row.display_order,
+            source: row.source || 'duo21',
+            active: Boolean(row.active)
+          });
+        }
+      }
+    } catch (e: any) {
+      console.warn('[place_media_items] batch query exception:', e.message);
+    }
+    return map;
+  },
+
+  async getMediaForPlace(placeId: string, includeInactive = false): Promise<any[]> {
+    const targetId = toDeterministicUuid(placeId);
+    if (env.DATA_MODE === 'mock' || !serverClient) {
+      const place = mockStore.places.find(p => p.id === placeId || p.id === targetId);
+      const media = place?.media || [];
+      return [...media].sort((a, b) => {
+        if (a.is_hero && !b.is_hero) return -1;
+        if (!a.is_hero && b.is_hero) return 1;
+        return (a.order || 0) - (b.order || 0);
+      });
+    }
+
+    try {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      let query = serverClient
+        .from('place_media_items')
+        .select('*');
+
+      if (uuidRegex.test(placeId) && placeId !== targetId) {
+        query = query.or(`place_id.eq.${targetId},place_id.eq.${placeId}`);
+      } else {
+        query = query.eq('place_id', targetId);
+      }
+
+      if (!includeInactive) {
+        query = query.eq('active', true);
+      }
+
+      const { data, error } = await query
+        .order('is_hero', { ascending: false })
+        .order('display_order', { ascending: true });
+
+      if (error) {
+        console.warn(`[place_media_items] query warning for ${placeId}:`, error.message);
+        return [];
+      }
+
+      return (data || []).map((row: any) => ({
+        id: row.id,
+        url: row.url,
+        thumbnail_url: row.thumbnail_url || row.url,
+        card_url: row.card_url || row.url,
+        width: row.width || undefined,
+        height: row.height || undefined,
+        caption: row.caption || undefined,
+        is_hero: Boolean(row.is_hero),
+        is_logo: Boolean(row.is_logo),
+        order: row.display_order,
+        source: row.source || 'duo21',
+        active: Boolean(row.active),
+        created_at: row.created_at,
+        updated_at: row.updated_at
+      }));
+    } catch (err: any) {
+      console.warn('[place_media_items] getMediaForPlace error:', err.message);
+      return [];
+    }
+  },
+
   async getPlaces(): Promise<any[]> {
     if (env.DATA_MODE === 'mock') {
       return mockStore.places.filter(p => p.active !== false).map(p => mapRawPlaceToClientPlace(p));
@@ -264,7 +388,15 @@ export const supabaseServer = {
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
-    return (data || []).map(r => mapRawPlaceToClientPlace(r));
+
+    const allMediaByPlace = await this.getAllActiveMediaMap();
+    return (data || []).map(r => {
+      const mapped = mapRawPlaceToClientPlace(r);
+      if (allMediaByPlace[mapped.id] && allMediaByPlace[mapped.id].length > 0) {
+        mapped.media = allMediaByPlace[mapped.id];
+      }
+      return mapped;
+    });
   },
 
   async getAllPlacesForAdmin(): Promise<any[]> {
@@ -284,13 +416,31 @@ export const supabaseServer = {
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
-    return (data || []).map(r => mapRawPlaceToClientPlace(r));
+
+    const allMediaByPlace = await this.getAllActiveMediaMap();
+    return (data || []).map(r => {
+      const mapped = mapRawPlaceToClientPlace(r);
+      if (allMediaByPlace[mapped.id] && allMediaByPlace[mapped.id].length > 0) {
+        mapped.media = allMediaByPlace[mapped.id];
+      }
+      return mapped;
+    });
   },
 
   async getPlaceById(id: string): Promise<any | null> {
+    const targetId = toDeterministicUuid(id);
     if (env.DATA_MODE === 'mock') {
-      const p = mockStore.places.find(item => item.id === id);
-      return p ? mapRawPlaceToClientPlace(p) : null;
+      const p = mockStore.places.find(item => item.id === id || item.id === targetId);
+      if (!p) return null;
+      const clientPlace = mapRawPlaceToClientPlace(p);
+      if (Array.isArray(clientPlace.media)) {
+        clientPlace.media = [...clientPlace.media].sort((a, b) => {
+          if (a.is_hero && !b.is_hero) return -1;
+          if (!a.is_hero && b.is_hero) return 1;
+          return (a.order || 0) - (b.order || 0);
+        });
+      }
+      return clientPlace;
     }
 
     if (!serverClient) {
@@ -300,17 +450,24 @@ export const supabaseServer = {
     const { data, error } = await serverClient
       .from('places')
       .select('*')
-      .eq('id', id)
+      .or(`id.eq.${id},id.eq.${targetId}`)
       .maybeSingle();
 
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
-    return data ? mapRawPlaceToClientPlace(data) : null;
+    if (!data) return null;
+
+    const clientPlace = mapRawPlaceToClientPlace(data);
+    const mediaItems = await this.getMediaForPlace(data.id);
+    if (mediaItems.length > 0) {
+      clientPlace.media = mediaItems;
+    }
+    return clientPlace;
   },
 
   async savePlace(place: any): Promise<any> {
-    const id = place.id || `place_${Date.now()}`;
+    const id = place.id ? toDeterministicUuid(place.id) : crypto.randomUUID();
     const dq = calculatePlaceDataQuality(place);
     const newPlace = {
       ...place,
@@ -322,7 +479,7 @@ export const supabaseServer = {
     };
 
     if (env.DATA_MODE === 'mock') {
-      const idx = mockStore.places.findIndex(p => p.id === id);
+      const idx = mockStore.places.findIndex(p => p.id === id || p.id === place.id);
       if (idx >= 0) mockStore.places[idx] = newPlace;
       else mockStore.places.push(newPlace);
       return mapRawPlaceToClientPlace(newPlace);
@@ -332,27 +489,48 @@ export const supabaseServer = {
       throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
     }
 
-    const { data, error } = await serverClient
+    // Extract relational fields so they are NEVER sent directly to places table
+    const { media, hours, reviews, ...rawPlaceFields } = newPlace;
+
+    // Sanitize payload: ONLY include valid columns of public.places
+    const sanitizedPayload: Record<string, any> = {};
+    for (const [key, val] of Object.entries(rawPlaceFields)) {
+      if (VALID_PLACE_COLUMNS.has(key)) {
+        sanitizedPayload[key] = val;
+      }
+    }
+
+    const { error } = await serverClient
       .from('places')
-      .upsert(newPlace)
-      .select()
-      .single();
+      .upsert(sanitizedPayload);
 
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
-    return mapRawPlaceToClientPlace(data);
+
+    if (Array.isArray(media) && media.length > 0) {
+      for (const m of media) {
+        await this.savePlaceMediaItem(id, m);
+      }
+    }
+
+    return await this.getPlaceById(id);
   },
 
   async updatePlace(id: string, updates: any): Promise<any> {
+    const targetId = toDeterministicUuid(id);
     if (env.DATA_MODE === 'mock') {
-      const existing = mockStore.places.find(p => p.id === id);
+      const existing = mockStore.places.find(p => p.id === id || p.id === targetId);
       if (!existing) throw new Error('Place not found');
-      const updated = { ...existing, ...updates, updated_at: new Date().toISOString() };
+      if (Array.isArray(updates.media)) {
+        await this.reorderPlaceMedia(targetId, updates.media);
+      }
+      const { media, ...restUpdates } = updates;
+      const updated = { ...existing, ...restUpdates, updated_at: new Date().toISOString() };
       const dq = calculatePlaceDataQuality(updated);
       updated.data_quality_score = dq.score;
       updated.data_quality_label = dq.label;
-      const idx = mockStore.places.findIndex(p => p.id === id);
+      const idx = mockStore.places.findIndex(p => p.id === id || p.id === targetId);
       mockStore.places[idx] = updated;
       return mapRawPlaceToClientPlace(updated);
     }
@@ -365,24 +543,37 @@ export const supabaseServer = {
     const merged = { ...(existing || {}), ...updates };
     const dq = calculatePlaceDataQuality(merged);
 
-    const payload = {
-      ...updates,
+    // Extract media so it is NEVER sent to places table
+    const { media, hours, reviews, ...rawPlaceFields } = updates;
+
+    // If media was explicitly passed in updates, reorder/sync place_media_items
+    if (Array.isArray(media)) {
+      await this.reorderPlaceMedia(targetId, media);
+    }
+
+    // Sanitize payload: ONLY include valid columns of public.places
+    const sanitizedPayload: Record<string, any> = {
       data_quality_score: dq.score,
       data_quality_label: dq.label,
       updated_at: new Date().toISOString()
     };
 
-    const { data, error } = await serverClient
+    for (const [key, val] of Object.entries(rawPlaceFields)) {
+      if (VALID_PLACE_COLUMNS.has(key)) {
+        sanitizedPayload[key] = val;
+      }
+    }
+
+    const { error } = await serverClient
       .from('places')
-      .update(payload)
-      .eq('id', id)
-      .select()
-      .single();
+      .update(sanitizedPayload)
+      .eq('id', targetId);
 
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
-    return mapRawPlaceToClientPlace(data);
+
+    return await this.getPlaceById(targetId);
   },
 
   async deactivatePlace(id: string): Promise<boolean> {
@@ -391,8 +582,9 @@ export const supabaseServer = {
   },
 
   async deletePlace(id: string): Promise<boolean> {
+    const targetId = toDeterministicUuid(id);
     if (env.DATA_MODE === 'mock') {
-      const idx = mockStore.places.findIndex(p => p.id === id);
+      const idx = mockStore.places.findIndex(p => p.id === id || p.id === targetId);
       if (idx >= 0) {
         mockStore.places.splice(idx, 1);
         return true;
@@ -407,7 +599,7 @@ export const supabaseServer = {
     const { error } = await serverClient
       .from('places')
       .delete()
-      .eq('id', id);
+      .eq('id', targetId);
 
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
@@ -416,19 +608,23 @@ export const supabaseServer = {
   },
 
   async savePlaceMediaItem(placeId: string, mediaItem: any): Promise<any> {
-    const id = mediaItem.id || `media_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const targetPlaceId = toDeterministicUuid(placeId);
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const mediaId = mediaItem.id && uuidRegex.test(mediaItem.id) ? mediaItem.id : crypto.randomUUID();
+    const isHero = Boolean(mediaItem.is_hero);
+
     const newMedia = {
-      id,
-      place_id: placeId,
+      id: mediaId,
+      place_id: targetPlaceId,
       url: mediaItem.url,
-      thumbnail_url: mediaItem.thumbnail_url || null,
-      card_url: mediaItem.card_url || null,
+      thumbnail_url: mediaItem.thumbnail_url || mediaItem.url,
+      card_url: mediaItem.card_url || mediaItem.url,
       width: mediaItem.width || null,
       height: mediaItem.height || null,
       caption: mediaItem.caption || null,
-      is_hero: Boolean(mediaItem.is_hero),
+      is_hero: isHero,
       is_logo: Boolean(mediaItem.is_logo),
-      display_order: Number(mediaItem.display_order || mediaItem.order || 0),
+      display_order: Number(mediaItem.display_order ?? mediaItem.order ?? 0),
       source: mediaItem.source || 'duo21',
       active: mediaItem.active !== false,
       created_at: new Date().toISOString(),
@@ -436,7 +632,7 @@ export const supabaseServer = {
     };
 
     if (env.DATA_MODE === 'mock' || !serverClient) {
-      const place = mockStore.places.find(p => p.id === placeId);
+      const place = mockStore.places.find(p => p.id === placeId || p.id === targetPlaceId);
       if (place) {
         if (!Array.isArray(place.media)) place.media = [];
         if (newMedia.is_hero) {
@@ -458,64 +654,178 @@ export const supabaseServer = {
     }
 
     try {
-      await serverClient
-        .from('place_media_items')
-        .insert(newMedia);
-    } catch (e: any) {
-      console.warn('[place_media_items] insert warning:', e.message);
-    }
-
-    const place = await this.getPlaceById(placeId);
-    if (place) {
-      const currentMedia = Array.isArray(place.media) ? [...place.media] : [];
-      if (newMedia.is_hero) {
-        currentMedia.forEach(m => { m.is_hero = false; });
+      // If marked as hero, reset previous hero media for this place
+      if (isHero) {
+        await serverClient
+          .from('place_media_items')
+          .update({ is_hero: false, updated_at: new Date().toISOString() })
+          .eq('place_id', targetPlaceId);
       }
-      currentMedia.push({
-        id: newMedia.id,
-        url: newMedia.url,
-        thumbnail_url: newMedia.thumbnail_url,
-        card_url: newMedia.card_url,
-        caption: newMedia.caption,
-        is_hero: newMedia.is_hero,
-        source: newMedia.source,
-        active: newMedia.active,
-        order: newMedia.display_order
-      });
-      await this.updatePlace(placeId, { media: currentMedia });
-    }
 
-    return newMedia;
+      const { data, error } = await serverClient
+        .from('place_media_items')
+        .insert(newMedia)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('[place_media_items] insert error:', error.message);
+        throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
+      }
+
+      // Update place's updated_at timestamp without touching media column
+      try {
+        const { error: touchError } = await serverClient
+          .from('places')
+          .update({ updated_at: new Date().toISOString() })
+          .eq('id', targetPlaceId);
+        if (touchError) {
+          console.warn('[places] updated_at touch warning:', touchError.message);
+        }
+      } catch (touchErr: any) {
+        console.warn('[places] updated_at touch exception:', touchErr.message);
+      }
+
+      return data || newMedia;
+    } catch (err: any) {
+      console.error('[place_media_items] save error:', err.message);
+      throw err;
+    }
   },
 
   async deletePlaceMediaItem(placeId: string, mediaIdOrUrl: string): Promise<boolean> {
+    const targetPlaceId = toDeterministicUuid(placeId);
     if (env.DATA_MODE === 'mock' || !serverClient) {
-      const place = mockStore.places.find(p => p.id === placeId);
+      const place = mockStore.places.find(p => p.id === placeId || p.id === targetPlaceId);
       if (place && Array.isArray(place.media)) {
         place.media = place.media.filter((m: any) => m.id !== mediaIdOrUrl && m.url !== mediaIdOrUrl);
+        if (place.media.length > 0 && !place.media.some((m: any) => m.is_hero)) {
+          place.media[0].is_hero = true;
+        }
       }
       return true;
     }
 
     try {
-      await serverClient
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      const isUuid = uuidRegex.test(mediaIdOrUrl);
+
+      // 1. Fetch item to check if it's our own Storage file and if it's hero
+      let selectQuery = serverClient
+        .from('place_media_items')
+        .select('*')
+        .eq('place_id', targetPlaceId);
+
+      if (isUuid) {
+        selectQuery = selectQuery.eq('id', mediaIdOrUrl);
+      } else {
+        selectQuery = selectQuery.eq('url', mediaIdOrUrl);
+      }
+
+      const { data: itemToDelete } = await selectQuery.maybeSingle();
+
+      // 2. If it is our DUO21 managed storage file, delete from Supabase Storage
+      if (itemToDelete?.url) {
+        const isOurStorage = itemToDelete.url.includes('/places/') && (itemToDelete.source === 'duo21' || itemToDelete.url.includes('storage.supabase'));
+        if (isOurStorage && env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+          try {
+            const match = itemToDelete.url.match(/places\/(.+)$/);
+            if (match && match[1]) {
+              const relativePath = match[1];
+              const { createClient } = await import('@supabase/supabase-js');
+              const client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+              await client.storage.from('places').remove([relativePath]);
+            }
+          } catch (storageErr) {
+            console.warn('[Supabase Storage] Delete error (ignored):', storageErr);
+          }
+        }
+      }
+
+      // 3. Delete from place_media_items
+      let deleteQuery = serverClient
         .from('place_media_items')
         .delete()
-        .or(`id.eq.${mediaIdOrUrl},url.eq.${mediaIdOrUrl}`);
-    } catch {
-      // ignore
-    }
+        .eq('place_id', targetPlaceId);
 
-    const place = await this.getPlaceById(placeId);
-    if (place && Array.isArray(place.media)) {
-      const updatedMedia = place.media.filter((m: any) => m.id !== mediaIdOrUrl && m.url !== mediaIdOrUrl);
-      if (updatedMedia.length > 0 && !updatedMedia.some((m: any) => m.is_hero)) {
-        updatedMedia[0].is_hero = true;
+      if (isUuid) {
+        deleteQuery = deleteQuery.eq('id', mediaIdOrUrl);
+      } else {
+        deleteQuery = deleteQuery.eq('url', mediaIdOrUrl);
       }
-      await this.updatePlace(placeId, { media: updatedMedia });
+
+      const { error: deleteError } = await deleteQuery;
+
+      if (deleteError) {
+        console.warn('[place_media_items] delete warning:', deleteError.message);
+      }
+
+      // 4. If hero was deleted, promote first remaining active media to hero
+      if (itemToDelete?.is_hero) {
+        const { data: remaining } = await serverClient
+          .from('place_media_items')
+          .select('id')
+          .eq('place_id', targetPlaceId)
+          .eq('active', true)
+          .order('display_order', { ascending: true })
+          .limit(1);
+
+        if (remaining && remaining.length > 0) {
+          await serverClient
+            .from('place_media_items')
+            .update({ is_hero: true, updated_at: new Date().toISOString() })
+            .eq('id', remaining[0].id);
+        }
+      }
+
+      return true;
+    } catch (err: any) {
+      console.warn('[place_media_items] delete exception:', err.message);
+      return false;
+    }
+  },
+
+  async reorderPlaceMedia(placeId: string, mediaItems: any[]): Promise<any[]> {
+    const targetPlaceId = toDeterministicUuid(placeId);
+    if (!Array.isArray(mediaItems)) return [];
+
+    if (env.DATA_MODE === 'mock' || !serverClient) {
+      const place = mockStore.places.find(p => p.id === placeId || p.id === targetPlaceId);
+      if (place) {
+        place.media = mediaItems.map((m, idx) => ({
+          ...m,
+          order: idx + 1,
+          is_hero: idx === 0 ? true : false
+        }));
+      }
+      return place?.media || [];
     }
 
-    return true;
+    try {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      for (let i = 0; i < mediaItems.length; i++) {
+        const item = mediaItems[i];
+        let query = serverClient
+          .from('place_media_items')
+          .update({
+            display_order: i + 1,
+            is_hero: i === 0,
+            updated_at: new Date().toISOString()
+          })
+          .eq('place_id', targetPlaceId);
+
+        if (item.id && uuidRegex.test(item.id)) {
+          query = query.eq('id', item.id);
+        } else if (item.url) {
+          query = query.eq('url', item.url);
+        }
+        await query;
+      }
+    } catch (err: any) {
+      console.warn('[place_media_items] reorder warning:', err.message);
+    }
+
+    return await this.getMediaForPlace(targetPlaceId);
   },
 
   async getCatalogMetrics(): Promise<any> {

@@ -278,10 +278,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleSavePlace = async (updatedPlace: Place) => {
     const res = await fetch(`/api/admin/places/${updatedPlace.id}`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-admin-key': adminApiKey
-      },
+      headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+      credentials: 'include',
       body: JSON.stringify(updatedPlace)
     });
     if (!res.ok) {

@@ -918,8 +918,10 @@ ${JSON.stringify(context || {})}`;
           children_friendly: Boolean(r.suitable_for_children ?? true),
           indoor_type: (r.indoor_outdoor || 'outdoor') as any,
           opening_hours: r.opening_hours || { 'seg': '09:00 - 18:00' },
-          media: [{ url: r.media_url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80', is_hero: true }],
-          is_divulga_lugares_partner: Boolean(r.partner || r.divulga_lugares_recommended),
+          media: (Array.isArray(r.media) && r.media.length > 0)
+            ? r.media
+            : [{ url: r.media_url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80', is_hero: true, source: 'duo21' }],
+          is_divulga_lugares_partner: Boolean(r.partner || r.is_divulga_lugares_partner || r.divulga_lugares_recommended),
           active: Boolean(r.active ?? true),
           is_demo: Boolean(r.is_demo ?? true),
           created_at: r.created_at || new Date().toISOString(),
@@ -2037,7 +2039,8 @@ ${JSON.stringify(context || {})}`;
         res.status(400).json({ error: 'Array de mídia obrigatório.' });
         return;
       }
-      const updatedPlace = await supabaseServer.updatePlace(placeId, { media });
+      await supabaseServer.reorderPlaceMedia(placeId, media);
+      const updatedPlace = await supabaseServer.getPlaceById(placeId);
       res.json({ success: true, place: updatedPlace });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

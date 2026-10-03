@@ -225,8 +225,10 @@ export class SupabasePlaceRepository implements PlaceRepository {
       children_friendly: Boolean(row.suitable_for_children ?? true),
       indoor_type: (row.indoor_outdoor || 'outdoor') as any,
       opening_hours: row.opening_hours || { 'seg': '09:00 - 18:00' },
-      media: [{ url: row.media_url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80', is_hero: true }],
-      is_divulga_lugares_partner: Boolean(row.partner || row.divulga_lugares_recommended),
+      media: (Array.isArray(row.media) && row.media.length > 0)
+        ? row.media
+        : [{ url: row.media_url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80', is_hero: true, source: 'duo21' }],
+      is_divulga_lugares_partner: Boolean(row.partner || row.is_divulga_lugares_partner || row.divulga_lugares_recommended),
       active: Boolean(row.active ?? true),
       is_demo: Boolean(row.is_demo ?? true),
       created_at: row.created_at || new Date().toISOString(),

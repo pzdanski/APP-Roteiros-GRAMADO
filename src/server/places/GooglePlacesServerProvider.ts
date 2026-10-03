@@ -655,7 +655,7 @@ export class GooglePlacesServerProvider {
       const alreadyHasGooglePhoto = existingMedia.some((m: any) => m.url === candidate.photo_url);
 
       if (!alreadyHasGooglePhoto) {
-        existingMedia.push({
+        await supabaseServer.savePlaceMediaItem(localPlaceId, {
           url: candidate.photo_url,
           caption: 'Foto via Google Places',
           is_hero: !hasDuoHero && existingMedia.length === 0,
@@ -663,7 +663,6 @@ export class GooglePlacesServerProvider {
           active: true,
           order: existingMedia.length + 1
         });
-        updates.media = existingMedia;
       }
     }
 
