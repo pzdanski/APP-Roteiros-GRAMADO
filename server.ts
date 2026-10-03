@@ -1899,6 +1899,27 @@ ${JSON.stringify(context || {})}`;
   app.post('/api/admin/places/:id/media/upload', requireAdmin, async (req, res) => {
     try {
       const placeId = req.params.id;
+      const targetPlaceId = req.body?.place_id || placeId;
+
+      // Hotfix 10A.4: Defensive validation of real place_id before any storage or DB action
+      let realPlaceId = await supabaseServer.resolveRealPlaceId(targetPlaceId);
+      if (!realPlaceId && req.body?.slug) {
+        realPlaceId = await supabaseServer.resolveRealPlaceId(req.body.slug);
+      }
+      if (!realPlaceId && req.body?.place_name) {
+        realPlaceId = await supabaseServer.resolveRealPlaceId(req.body.place_name);
+      }
+      if (!realPlaceId && placeId && placeId !== targetPlaceId) {
+        realPlaceId = await supabaseServer.resolveRealPlaceId(placeId);
+      }
+      if (!realPlaceId) {
+        res.status(404).json({
+          code: 'PLACE_NOT_FOUND',
+          error: `Local com identificador "${targetPlaceId}" não foi encontrado no catálogo do Supabase. Upload abortado para garantir integridade referencial.`
+        });
+        return;
+      }
+
       const {
         imageData,
         fileName,
@@ -1943,10 +1964,12 @@ ${JSON.stringify(context || {})}`;
 
       let publicUrl = '';
       let thumbUrl = '';
+      let uploadedStoragePath: string | null = null;
+      let uploadedLocalPath: string | null = null;
 
       const timestamp = Date.now();
       const cleanFileName = (fileName || 'photo.webp').replace(/[^a-zA-Z0-9._-]/g, '_');
-      const storagePath = `places/${placeId}/${timestamp}_${cleanFileName}`;
+      const storagePath = `places/${realPlaceId}/${timestamp}_${cleanFileName}`;
 
       // Check if Supabase Storage is available
       const hasSupabaseStorage = Boolean(
@@ -1968,6 +1991,7 @@ ${JSON.stringify(context || {})}`;
             });
 
           if (!uploadError) {
+            uploadedStoragePath = storagePath;
             const { data: publicUrlData } = client.storage
               .from('places')
               .getPublicUrl(storagePath);
@@ -1980,12 +2004,13 @@ ${JSON.stringify(context || {})}`;
 
       // Fallback if Supabase Storage not provisioned or in mock mode
       if (!publicUrl) {
-        const uploadDir = path.join(process.cwd(), 'dist', 'uploads', 'places', placeId);
+        const uploadDir = path.join(process.cwd(), 'dist', 'uploads', 'places', realPlaceId);
         try {
           fs.mkdirSync(uploadDir, { recursive: true });
           const localPath = path.join(uploadDir, `${timestamp}_${cleanFileName}`);
           fs.writeFileSync(localPath, buffer);
-          publicUrl = `/uploads/places/${placeId}/${timestamp}_${cleanFileName}`;
+          uploadedLocalPath = localPath;
+          publicUrl = `/uploads/places/${realPlaceId}/${timestamp}_${cleanFileName}`;
         } catch {
           publicUrl = `data:${effectiveMime};base64,${base64Content}`;
         }
@@ -1996,16 +2021,40 @@ ${JSON.stringify(context || {})}`;
       }
 
       // Persist in place_media_items and update place
-      const savedMedia = await supabaseServer.savePlaceMediaItem(placeId, {
-        url: publicUrl,
-        thumbnail_url: thumbUrl || publicUrl,
-        caption: caption || '',
-        is_hero: Boolean(isHero),
-        source: source || 'duo21',
-        active: true
-      });
+      let savedMedia;
+      try {
+        savedMedia = await supabaseServer.savePlaceMediaItem(realPlaceId, {
+          url: publicUrl,
+          thumbnail_url: thumbUrl || publicUrl,
+          caption: caption || '',
+          is_hero: Boolean(isHero),
+          source: source || 'duo21',
+          active: true
+        });
+      } catch (dbErr: any) {
+        // Storage orphan protection: remove uploaded file if DB insert fails
+        if (hasSupabaseStorage && uploadedStoragePath) {
+          try {
+            const { createClient } = await import('@supabase/supabase-js');
+            const client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+            await client.storage.from('places').remove([uploadedStoragePath]);
+          } catch (cleanErr) {
+            console.warn('[Storage Cleanup] Failed to cleanup orphaned storage file:', cleanErr);
+          }
+        }
+        if (uploadedLocalPath) {
+          try {
+            if (fs.existsSync(uploadedLocalPath)) {
+              fs.unlinkSync(uploadedLocalPath);
+            }
+          } catch (localCleanErr) {
+            console.warn('[Local Cleanup] Failed to cleanup orphaned local file:', localCleanErr);
+          }
+        }
+        throw dbErr;
+      }
 
-      const updatedPlace = await supabaseServer.getPlaceById(placeId);
+      const updatedPlace = await supabaseServer.getPlaceById(realPlaceId);
 
       res.status(201).json({
         success: true,
@@ -2014,7 +2063,10 @@ ${JSON.stringify(context || {})}`;
       });
     } catch (err: any) {
       console.error('[Upload Error]:', err);
-      res.status(500).json({ error: err.message || 'Falha ao processar upload de imagem.' });
+      res.status(err.message?.includes('PLACE_NOT_FOUND') ? 404 : 500).json({
+        code: err.message?.includes('PLACE_NOT_FOUND') ? 'PLACE_NOT_FOUND' : 'UPLOAD_ERROR',
+        error: err.message || 'Falha ao processar upload de imagem.'
+      });
     }
   });
 
@@ -2022,8 +2074,13 @@ ${JSON.stringify(context || {})}`;
   app.delete('/api/admin/places/:id/media/:mediaId', requireAdmin, async (req, res) => {
     try {
       const { id: placeId, mediaId } = req.params;
-      await supabaseServer.deletePlaceMediaItem(placeId, mediaId);
-      const updatedPlace = await supabaseServer.getPlaceById(placeId);
+      const realPlaceId = await supabaseServer.resolveRealPlaceId(placeId);
+      if (!realPlaceId) {
+        res.status(404).json({ error: 'Local não encontrado' });
+        return;
+      }
+      await supabaseServer.deletePlaceMediaItem(realPlaceId, mediaId);
+      const updatedPlace = await supabaseServer.getPlaceById(realPlaceId);
       res.json({ success: true, place: updatedPlace });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -2034,13 +2091,18 @@ ${JSON.stringify(context || {})}`;
   app.put('/api/admin/places/:id/media/reorder', requireAdmin, async (req, res) => {
     try {
       const { id: placeId } = req.params;
+      const realPlaceId = await supabaseServer.resolveRealPlaceId(placeId);
+      if (!realPlaceId) {
+        res.status(404).json({ error: 'Local não encontrado' });
+        return;
+      }
       const { media } = req.body;
       if (!Array.isArray(media)) {
         res.status(400).json({ error: 'Array de mídia obrigatório.' });
         return;
       }
-      await supabaseServer.reorderPlaceMedia(placeId, media);
-      const updatedPlace = await supabaseServer.getPlaceById(placeId);
+      await supabaseServer.reorderPlaceMedia(realPlaceId, media);
+      const updatedPlace = await supabaseServer.getPlaceById(realPlaceId);
       res.json({ success: true, place: updatedPlace });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

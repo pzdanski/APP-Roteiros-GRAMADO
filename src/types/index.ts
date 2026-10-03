@@ -241,6 +241,7 @@ export interface Place {
   cost_max?: number;
   provenance?: FieldProvenance;
   source_id?: string;
+  legacy_id?: string;
   source_url?: string;
   checked_at?: string;
   confidence?: ConfidenceLevel;

@@ -5,6 +5,45 @@ import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
 import { calculatePlaceDataQuality } from '../utils/dataQuality';
 import { PlaceCategory } from '../types';
 
+// Legacy seed identifier mapping for backwards compatibility with test fixtures and legacy seeds
+export const LEGACY_SEED_TO_SLUG: Record<string, string> = {
+  'plc-gra-01': 'lago-negro',
+  'plc-gra-02': 'mini-mundo',
+  'plc-gra-03': 'snowland-gramado',
+  'plc-gra-04': 'rua-torta-praca-etnias',
+  'plc-gra-05': 'cantina-pastasciutta',
+  'plc-gra-colosseo-fondue': 'restaurante-colosseo',
+  'plc-gra-06': 'olivas-de-gramado',
+  'plc-can-01': 'catedral-de-pedra',
+  'plc-can-02': 'parque-do-caracol',
+  'plc-can-03': 'skyglass-canela',
+  'plc-can-04': 'alpen-park',
+  'plc-nvp-01': 'labirinto-verde',
+  'plc-nvp-02': 'aldeia-do-imigrante',
+  'plc-nvp-03': 'ninho-das-aguias'
+};
+
+// Seed UUID to slug mapping to resolve real PostgreSQL UUID if production instance uses different UUIDs
+export const SEED_UUID_TO_SLUG: Record<string, string> = {
+  'a0000001-0000-0000-0000-000000000001': 'lago-negro',
+  'a0000001-0000-0000-0000-000000000002': 'mini-mundo',
+  'a0000001-0000-0000-0000-000000000003': 'snowland-gramado',
+  'a0000001-0000-0000-0000-000000000004': 'olivas-de-gramado',
+  'a0000001-0000-0000-0000-000000000005': 'praca-das-etnias',
+  'a0000001-0000-0000-0000-000000000006': 'mirante-vale-do-quilombo',
+  'a0000001-0000-0000-0000-000000000007': 'skyglass-canela',
+  'a0000001-0000-0000-0000-000000000008': 'parque-do-caracol',
+  'a0000001-0000-0000-0000-000000000009': 'alpen-park',
+  'a0000001-0000-0000-0000-000000000010': 'catedral-de-pedra',
+  'a0000001-0000-0000-0000-000000000011': 'labirinto-verde',
+  'a0000001-0000-0000-0000-000000000012': 'aldeia-do-imigrante',
+  'a0000001-0000-0000-0000-000000000013': 'ninho-das-aguias',
+  'b0000001-0000-0000-0000-000000000002': 'restaurante-colosseo',
+  'b0000001-0000-0000-0000-000000000004': 'cantina-pastasciutta'
+};
+
+// Deprecated fallback map - NOT the operational source of truth.
+// PostgreSQL public.places is the sole source of truth.
 export const PLACE_UUID_MAP: Record<string, string> = {
   'lago-negro': 'a0000001-0000-0000-0000-000000000001',
   'plc-gra-01': 'a0000001-0000-0000-0000-000000000001',
@@ -45,14 +84,20 @@ export const PLACE_UUID_MAP: Record<string, string> = {
   'plc-can-03': 'a0000001-0000-0000-0000-000000000007',
   'alpen-park': 'a0000001-0000-0000-0000-000000000009',
   'plc-can-04': 'a0000001-0000-0000-0000-000000000009',
-  'ninho-das-aguias': 'a0000001-0000-0000-0000-000000000011',
+  'ninho-das-aguias': 'a0000001-0000-0000-0000-000000000013',
+  'plc-nvp-03': 'a0000001-0000-0000-0000-000000000013',
   'hotel-casa-da-montanha': 'c0000001-0000-0000-0000-000000000001'
 };
 
+export const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function isValidUuid(val?: string | null): boolean {
+  if (!val || typeof val !== 'string') return false;
+  return UUID_REGEX.test(val.trim());
+}
+
 export function toDeterministicUuid(id: string): string {
   if (!id) return 'a0000001-0000-0000-0000-000000000001';
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  if (uuidRegex.test(id)) return id;
+  if (isValidUuid(id)) return id;
   if (PLACE_UUID_MAP[id]) return PLACE_UUID_MAP[id];
   const hash = crypto.createHash('md5').update(id).digest('hex');
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
@@ -80,7 +125,7 @@ export const VALID_PLACE_COLUMNS = new Set([
 ]);
 
 export function resolvePlaceUuid(id?: string, slug?: string): string {
-  if (id && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+  if (id && isValidUuid(id)) {
     return id;
   }
   if (slug && PLACE_UUID_MAP[slug]) return PLACE_UUID_MAP[slug];
@@ -267,8 +312,109 @@ export const supabaseServer = {
   },
 
   // ---------------------------------------------------------------------------
-  // Places & Media Isolation
+  // Places & Media Isolation (Hotfix 10A.4: Real UUID Resolution)
   // ---------------------------------------------------------------------------
+  /**
+   * Resolves any incoming place identifier (UUID, slug, source_id, name)
+   * to the REAL primary key UUID in the Supabase `places` table.
+   * Never generates synthetic hash UUIDs that do not exist in the database.
+   */
+  async resolveRealPlaceId(identifier: string): Promise<string | null> {
+    if (!identifier || typeof identifier !== 'string') return null;
+    const cleanId = identifier.trim();
+    if (!cleanId) return null;
+
+    // 1. Mock mode
+    if (env.DATA_MODE === 'mock' || !serverClient) {
+      const found = mockStore.places.find(p =>
+        p.id === cleanId ||
+        p.slug === cleanId ||
+        (p as any).legacy_id === cleanId ||
+        (p as any).source_id === cleanId ||
+        (LEGACY_SEED_TO_SLUG[cleanId] && p.slug === LEGACY_SEED_TO_SLUG[cleanId]) ||
+        (SEED_UUID_TO_SLUG[cleanId] && p.slug === SEED_UUID_TO_SLUG[cleanId]) ||
+        p.name.toLowerCase() === cleanId.toLowerCase()
+      );
+      return found ? found.id : null;
+    }
+
+    // 2. Direct UUID lookup in public.places (verify existence in database)
+    if (isValidUuid(cleanId)) {
+      const { data: byId, error: errId } = await serverClient
+        .from('places')
+        .select('id')
+        .eq('id', cleanId)
+        .limit(1)
+        .maybeSingle();
+      if (!errId && byId?.id) return byId.id;
+
+      // If cleanId is a known seed UUID that does not match this DB instance, resolve via its known slug
+      const seedSlug = SEED_UUID_TO_SLUG[cleanId];
+      if (seedSlug) {
+        const { data: bySeedSlug, error: errSeedSlug } = await serverClient
+          .from('places')
+          .select('id')
+          .eq('slug', seedSlug)
+          .limit(1)
+          .maybeSingle();
+        if (!errSeedSlug && bySeedSlug?.id) return bySeedSlug.id;
+      }
+    }
+
+    // 3. Lookup by source_id or google_place_id
+    const { data: bySource, error: errSource } = await serverClient
+      .from('places')
+      .select('id')
+      .eq('source_id', cleanId)
+      .limit(1)
+      .maybeSingle();
+    if (!errSource && bySource?.id) return bySource.id;
+
+    const { data: byGId, error: errGId } = await serverClient
+      .from('places')
+      .select('id')
+      .eq('google_place_id', cleanId)
+      .limit(1)
+      .maybeSingle();
+    if (!errGId && byGId?.id) return byGId.id;
+
+    // 4. Lookup by slug
+    const { data: bySlug, error: errSlug } = await serverClient
+      .from('places')
+      .select('id')
+      .eq('slug', cleanId)
+      .limit(1)
+      .maybeSingle();
+    if (!errSlug && bySlug?.id) return bySlug.id;
+
+    // Also check if cleanId is a legacy seed ID mapped to a known slug
+    const legacySlug = LEGACY_SEED_TO_SLUG[cleanId];
+    if (legacySlug) {
+      const { data: byLegacySlug, error: errLegacySlug } = await serverClient
+        .from('places')
+        .select('id')
+        .eq('slug', legacySlug)
+        .limit(1)
+        .maybeSingle();
+      if (!errLegacySlug && byLegacySlug?.id) return byLegacySlug.id;
+    }
+
+    // 5. Lookup by name (case-insensitive fuzzy/exact match)
+    const normalizedName = cleanId.replace(/[-_]/g, ' ').trim();
+    if (normalizedName.length >= 3) {
+      const { data: byName, error: errName } = await serverClient
+        .from('places')
+        .select('id')
+        .ilike('name', `%${normalizedName}%`)
+        .limit(1)
+        .maybeSingle();
+      if (!errName && byName?.id) return byName.id;
+    }
+
+    // Never generate synthetic UUIDs by hash! Supabase places.id is the only source of truth.
+    return null;
+  },
+
   async getAllActiveMediaMap(): Promise<Record<string, any[]>> {
     const map: Record<string, any[]> = {};
     if (env.DATA_MODE === 'mock' || !serverClient) return map;
@@ -313,9 +459,11 @@ export const supabaseServer = {
   },
 
   async getMediaForPlace(placeId: string, includeInactive = false): Promise<any[]> {
-    const targetId = toDeterministicUuid(placeId);
+    const realPlaceId = await this.resolveRealPlaceId(placeId);
+    if (!realPlaceId) return [];
+
     if (env.DATA_MODE === 'mock' || !serverClient) {
-      const place = mockStore.places.find(p => p.id === placeId || p.id === targetId);
+      const place = mockStore.places.find(p => p.id === placeId || p.id === realPlaceId);
       const media = place?.media || [];
       return [...media].sort((a, b) => {
         if (a.is_hero && !b.is_hero) return -1;
@@ -325,16 +473,10 @@ export const supabaseServer = {
     }
 
     try {
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
       let query = serverClient
         .from('place_media_items')
-        .select('*');
-
-      if (uuidRegex.test(placeId) && placeId !== targetId) {
-        query = query.or(`place_id.eq.${targetId},place_id.eq.${placeId}`);
-      } else {
-        query = query.eq('place_id', targetId);
-      }
+        .select('*')
+        .eq('place_id', realPlaceId);
 
       if (!includeInactive) {
         query = query.eq('active', true);
@@ -428,9 +570,18 @@ export const supabaseServer = {
   },
 
   async getPlaceById(id: string): Promise<any | null> {
-    const targetId = toDeterministicUuid(id);
-    if (env.DATA_MODE === 'mock') {
-      const p = mockStore.places.find(item => item.id === id || item.id === targetId);
+    const realPlaceId = await this.resolveRealPlaceId(id);
+    if (!realPlaceId) {
+      if (env.DATA_MODE === 'mock' || !serverClient) {
+        const p = mockStore.places.find(item => item.id === id || item.slug === id);
+        if (!p) return null;
+        return mapRawPlaceToClientPlace(p);
+      }
+      return null;
+    }
+
+    if (env.DATA_MODE === 'mock' || !serverClient) {
+      const p = mockStore.places.find(item => item.id === realPlaceId || item.id === id);
       if (!p) return null;
       const clientPlace = mapRawPlaceToClientPlace(p);
       if (Array.isArray(clientPlace.media)) {
@@ -450,7 +601,7 @@ export const supabaseServer = {
     const { data, error } = await serverClient
       .from('places')
       .select('*')
-      .or(`id.eq.${id},id.eq.${targetId}`)
+      .eq('id', realPlaceId)
       .maybeSingle();
 
     if (error) {
@@ -467,11 +618,12 @@ export const supabaseServer = {
   },
 
   async savePlace(place: any): Promise<any> {
-    const id = place.id ? toDeterministicUuid(place.id) : crypto.randomUUID();
+    const id = place.id && isValidUuid(place.id) ? place.id : crypto.randomUUID();
     const dq = calculatePlaceDataQuality(place);
     const newPlace = {
       ...place,
       id,
+      legacy_id: place.legacy_id || (place.id && !isValidUuid(place.id) ? place.id : undefined),
       data_quality_score: dq.score,
       data_quality_label: dq.label,
       created_at: place.created_at || new Date().toISOString(),
@@ -479,7 +631,13 @@ export const supabaseServer = {
     };
 
     if (env.DATA_MODE === 'mock') {
-      const idx = mockStore.places.findIndex(p => p.id === id || p.id === place.id);
+      const idx = mockStore.places.findIndex(p =>
+        p.id === id ||
+        p.id === place.id ||
+        (place.slug && p.slug === place.slug) ||
+        (place.source_id && p.source_id === place.source_id) ||
+        (place.legacy_id && (p as any).legacy_id === place.legacy_id)
+      );
       if (idx >= 0) mockStore.places[idx] = newPlace;
       else mockStore.places.push(newPlace);
       return mapRawPlaceToClientPlace(newPlace);
@@ -518,28 +676,28 @@ export const supabaseServer = {
   },
 
   async updatePlace(id: string, updates: any): Promise<any> {
-    const targetId = toDeterministicUuid(id);
-    if (env.DATA_MODE === 'mock') {
-      const existing = mockStore.places.find(p => p.id === id || p.id === targetId);
+    const realPlaceId = await this.resolveRealPlaceId(id);
+    if (!realPlaceId) {
+      throw new Error(`PLACE_NOT_FOUND: Local com identificador "${id}" não existe na tabela places.`);
+    }
+
+    if (env.DATA_MODE === 'mock' || !serverClient) {
+      const existing = mockStore.places.find(p => p.id === realPlaceId || p.id === id);
       if (!existing) throw new Error('Place not found');
       if (Array.isArray(updates.media)) {
-        await this.reorderPlaceMedia(targetId, updates.media);
+        await this.reorderPlaceMedia(realPlaceId, updates.media);
       }
       const { media, ...restUpdates } = updates;
       const updated = { ...existing, ...restUpdates, updated_at: new Date().toISOString() };
       const dq = calculatePlaceDataQuality(updated);
       updated.data_quality_score = dq.score;
       updated.data_quality_label = dq.label;
-      const idx = mockStore.places.findIndex(p => p.id === id || p.id === targetId);
+      const idx = mockStore.places.findIndex(p => p.id === realPlaceId || p.id === id);
       mockStore.places[idx] = updated;
       return mapRawPlaceToClientPlace(updated);
     }
 
-    if (!serverClient) {
-      throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
-    }
-
-    const existing = await this.getPlaceById(id);
+    const existing = await this.getPlaceById(realPlaceId);
     const merged = { ...(existing || {}), ...updates };
     const dq = calculatePlaceDataQuality(merged);
 
@@ -548,7 +706,7 @@ export const supabaseServer = {
 
     // If media was explicitly passed in updates, reorder/sync place_media_items
     if (Array.isArray(media)) {
-      await this.reorderPlaceMedia(targetId, media);
+      await this.reorderPlaceMedia(realPlaceId, media);
     }
 
     // Sanitize payload: ONLY include valid columns of public.places
@@ -567,13 +725,13 @@ export const supabaseServer = {
     const { error } = await serverClient
       .from('places')
       .update(sanitizedPayload)
-      .eq('id', targetId);
+      .eq('id', realPlaceId);
 
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
 
-    return await this.getPlaceById(targetId);
+    return await this.getPlaceById(realPlaceId);
   },
 
   async deactivatePlace(id: string): Promise<boolean> {
@@ -582,9 +740,11 @@ export const supabaseServer = {
   },
 
   async deletePlace(id: string): Promise<boolean> {
-    const targetId = toDeterministicUuid(id);
+    const realPlaceId = await this.resolveRealPlaceId(id);
+    if (!realPlaceId) return false;
+
     if (env.DATA_MODE === 'mock') {
-      const idx = mockStore.places.findIndex(p => p.id === id || p.id === targetId);
+      const idx = mockStore.places.findIndex(p => p.id === realPlaceId);
       if (idx >= 0) {
         mockStore.places.splice(idx, 1);
         return true;
@@ -599,7 +759,7 @@ export const supabaseServer = {
     const { error } = await serverClient
       .from('places')
       .delete()
-      .eq('id', targetId);
+      .eq('id', realPlaceId);
 
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
@@ -608,14 +768,31 @@ export const supabaseServer = {
   },
 
   async savePlaceMediaItem(placeId: string, mediaItem: any): Promise<any> {
-    const targetPlaceId = toDeterministicUuid(placeId);
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    const mediaId = mediaItem.id && uuidRegex.test(mediaItem.id) ? mediaItem.id : crypto.randomUUID();
+    const realPlaceId = await this.resolveRealPlaceId(placeId);
+    if (!realPlaceId) {
+      throw new Error(`PLACE_NOT_FOUND: Local com identificador "${placeId}" não existe na tabela places.`);
+    }
+
+    // Defensive check: ensure realPlaceId exists in places table right now
+    if (env.DATA_MODE === 'supabase' && serverClient) {
+      const { data: placeCheck, error: checkError } = await serverClient
+        .from('places')
+        .select('id')
+        .eq('id', realPlaceId)
+        .limit(1)
+        .maybeSingle();
+
+      if (checkError || !placeCheck?.id) {
+        throw new Error(`PLACE_NOT_FOUND: Integridade referencial violada. O local "${placeId}" (UUID ${realPlaceId}) não existe na tabela places do Supabase.`);
+      }
+    }
+
+    const mediaId = mediaItem.id && isValidUuid(mediaItem.id) ? mediaItem.id : crypto.randomUUID();
     const isHero = Boolean(mediaItem.is_hero);
 
     const newMedia = {
       id: mediaId,
-      place_id: targetPlaceId,
+      place_id: realPlaceId,
       url: mediaItem.url,
       thumbnail_url: mediaItem.thumbnail_url || mediaItem.url,
       card_url: mediaItem.card_url || mediaItem.url,
@@ -632,24 +809,25 @@ export const supabaseServer = {
     };
 
     if (env.DATA_MODE === 'mock' || !serverClient) {
-      const place = mockStore.places.find(p => p.id === placeId || p.id === targetPlaceId);
-      if (place) {
-        if (!Array.isArray(place.media)) place.media = [];
-        if (newMedia.is_hero) {
-          place.media.forEach((m: any) => { m.is_hero = false; });
-        }
-        place.media.push({
-          id: newMedia.id,
-          url: newMedia.url,
-          thumbnail_url: newMedia.thumbnail_url,
-          card_url: newMedia.card_url,
-          caption: newMedia.caption,
-          is_hero: newMedia.is_hero,
-          source: newMedia.source,
-          active: newMedia.active,
-          order: newMedia.display_order
-        });
+      const place = mockStore.places.find(p => p.id === realPlaceId);
+      if (!place) {
+        throw new Error(`PLACE_NOT_FOUND: Local com identificador "${placeId}" não existe na base de dados.`);
       }
+      if (!Array.isArray(place.media)) place.media = [];
+      if (newMedia.is_hero) {
+        place.media.forEach((m: any) => { m.is_hero = false; });
+      }
+      place.media.push({
+        id: newMedia.id,
+        url: newMedia.url,
+        thumbnail_url: newMedia.thumbnail_url,
+        card_url: newMedia.card_url,
+        caption: newMedia.caption,
+        is_hero: newMedia.is_hero,
+        source: newMedia.source,
+        active: newMedia.active,
+        order: newMedia.display_order
+      });
       return newMedia;
     }
 
@@ -659,7 +837,7 @@ export const supabaseServer = {
         await serverClient
           .from('place_media_items')
           .update({ is_hero: false, updated_at: new Date().toISOString() })
-          .eq('place_id', targetPlaceId);
+          .eq('place_id', realPlaceId);
       }
 
       const { data, error } = await serverClient
@@ -670,6 +848,9 @@ export const supabaseServer = {
 
       if (error) {
         console.error('[place_media_items] insert error:', error.message);
+        if (error.message.includes('violates foreign key constraint') || (error as any).code === '23503') {
+          throw new Error(`PLACE_NOT_FOUND: O local "${placeId}" (UUID ${realPlaceId}) não existe na tabela places do Supabase.`);
+        }
         throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
       }
 
@@ -678,7 +859,7 @@ export const supabaseServer = {
         const { error: touchError } = await serverClient
           .from('places')
           .update({ updated_at: new Date().toISOString() })
-          .eq('id', targetPlaceId);
+          .eq('id', realPlaceId);
         if (touchError) {
           console.warn('[places] updated_at touch warning:', touchError.message);
         }
@@ -694,9 +875,11 @@ export const supabaseServer = {
   },
 
   async deletePlaceMediaItem(placeId: string, mediaIdOrUrl: string): Promise<boolean> {
-    const targetPlaceId = toDeterministicUuid(placeId);
+    const realPlaceId = await this.resolveRealPlaceId(placeId);
+    if (!realPlaceId) return false;
+
     if (env.DATA_MODE === 'mock' || !serverClient) {
-      const place = mockStore.places.find(p => p.id === placeId || p.id === targetPlaceId);
+      const place = mockStore.places.find(p => p.id === placeId || p.id === realPlaceId);
       if (place && Array.isArray(place.media)) {
         place.media = place.media.filter((m: any) => m.id !== mediaIdOrUrl && m.url !== mediaIdOrUrl);
         if (place.media.length > 0 && !place.media.some((m: any) => m.is_hero)) {
@@ -707,14 +890,13 @@ export const supabaseServer = {
     }
 
     try {
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-      const isUuid = uuidRegex.test(mediaIdOrUrl);
+      const isUuid = isValidUuid(mediaIdOrUrl);
 
       // 1. Fetch item to check if it's our own Storage file and if it's hero
       let selectQuery = serverClient
         .from('place_media_items')
         .select('*')
-        .eq('place_id', targetPlaceId);
+        .eq('place_id', realPlaceId);
 
       if (isUuid) {
         selectQuery = selectQuery.eq('id', mediaIdOrUrl);
@@ -746,7 +928,7 @@ export const supabaseServer = {
       let deleteQuery = serverClient
         .from('place_media_items')
         .delete()
-        .eq('place_id', targetPlaceId);
+        .eq('place_id', realPlaceId);
 
       if (isUuid) {
         deleteQuery = deleteQuery.eq('id', mediaIdOrUrl);
@@ -765,7 +947,7 @@ export const supabaseServer = {
         const { data: remaining } = await serverClient
           .from('place_media_items')
           .select('id')
-          .eq('place_id', targetPlaceId)
+          .eq('place_id', realPlaceId)
           .eq('active', true)
           .order('display_order', { ascending: true })
           .limit(1);
@@ -786,11 +968,11 @@ export const supabaseServer = {
   },
 
   async reorderPlaceMedia(placeId: string, mediaItems: any[]): Promise<any[]> {
-    const targetPlaceId = toDeterministicUuid(placeId);
-    if (!Array.isArray(mediaItems)) return [];
+    const realPlaceId = await this.resolveRealPlaceId(placeId);
+    if (!realPlaceId || !Array.isArray(mediaItems)) return [];
 
     if (env.DATA_MODE === 'mock' || !serverClient) {
-      const place = mockStore.places.find(p => p.id === placeId || p.id === targetPlaceId);
+      const place = mockStore.places.find(p => p.id === placeId || p.id === realPlaceId);
       if (place) {
         place.media = mediaItems.map((m, idx) => ({
           ...m,
@@ -802,7 +984,6 @@ export const supabaseServer = {
     }
 
     try {
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
       for (let i = 0; i < mediaItems.length; i++) {
         const item = mediaItems[i];
         let query = serverClient
@@ -812,9 +993,9 @@ export const supabaseServer = {
             is_hero: i === 0,
             updated_at: new Date().toISOString()
           })
-          .eq('place_id', targetPlaceId);
+          .eq('place_id', realPlaceId);
 
-        if (item.id && uuidRegex.test(item.id)) {
+        if (item.id && isValidUuid(item.id)) {
           query = query.eq('id', item.id);
         } else if (item.url) {
           query = query.eq('url', item.url);
@@ -825,7 +1006,7 @@ export const supabaseServer = {
       console.warn('[place_media_items] reorder warning:', err.message);
     }
 
-    return await this.getMediaForPlace(targetPlaceId);
+    return await this.getMediaForPlace(realPlaceId);
   },
 
   async getCatalogMetrics(): Promise<any> {

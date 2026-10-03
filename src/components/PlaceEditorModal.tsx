@@ -323,12 +323,15 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({
+          place_id: formData.id,
+          slug: formData.slug,
+          place_name: formData.name,
           imageData: optimized.imageData,
           thumbnailData: optimized.thumbnailData,
           fileName: file.name,
           mimeType: optimized.mimeType,
           caption: newMediaCaption.trim() || file.name.replace(/\.[^/.]+$/, ''),
-          isHero: newMediaIsHero || (!formData.media || formData.media.length === 0),
+          isHero: newMediaIsHero,
           source: newMediaSource || 'duo21'
         })
       });

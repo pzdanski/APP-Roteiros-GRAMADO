@@ -3,7 +3,9 @@ import { Place, SerraEvent } from '../types';
 export const SEED_PLACES: Place[] = [
   // GRAMADO
   {
-    id: 'plc-gra-01',
+    id: 'a0000001-0000-0000-0000-000000000001',
+    legacy_id: 'plc-gra-01',
+    source_id: 'plc-gra-01',
     name: 'Lago Negro',
     slug: 'lago-negro',
     city: 'Gramado',
@@ -63,7 +65,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-gra-02',
+    id: 'a0000001-0000-0000-0000-000000000002',
+    legacy_id: 'plc-gra-02',
+    source_id: 'plc-gra-02',
     name: 'Mini Mundo',
     slug: 'mini-mundo',
     city: 'Gramado',
@@ -119,7 +123,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-gra-03',
+    id: 'a0000001-0000-0000-0000-000000000003',
+    legacy_id: 'plc-gra-03',
+    source_id: 'plc-gra-03',
     name: 'Snowland Gramado',
     slug: 'snowland-gramado',
     city: 'Gramado',
@@ -179,7 +185,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-gra-04',
+    id: 'a0000001-0000-0000-0000-000000000005',
+    legacy_id: 'plc-gra-04',
+    source_id: 'plc-gra-04',
     name: 'Rua Torta e Praça das Etnias',
     slug: 'rua-torta-praca-etnias',
     city: 'Gramado',
@@ -228,7 +236,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-gra-05',
+    id: 'b0000001-0000-0000-0000-000000000004',
+    legacy_id: 'plc-gra-05',
+    source_id: 'plc-gra-05',
     name: 'Cantina Pastasciutta',
     slug: 'cantina-pastasciutta',
     city: 'Gramado',
@@ -286,7 +296,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-gra-colosseo-fondue',
+    id: 'b0000001-0000-0000-0000-000000000002',
+    legacy_id: 'plc-gra-colosseo-fondue',
+    source_id: 'plc-gra-colosseo-fondue',
     name: 'Restaurante Colosseo Fondue',
     slug: 'restaurante-colosseo-fondue',
     city: 'Gramado',
@@ -346,7 +358,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-gra-06',
+    id: 'a0000001-0000-0000-0000-000000000004',
+    legacy_id: 'plc-gra-06',
+    source_id: 'plc-gra-06',
     name: 'Olivas de Gramado',
     slug: 'olivas-de-gramado',
     city: 'Gramado',
@@ -406,7 +420,9 @@ export const SEED_PLACES: Place[] = [
 
   // CANELA
   {
-    id: 'plc-can-01',
+    id: 'a0000001-0000-0000-0000-000000000010',
+    legacy_id: 'plc-can-01',
+    source_id: 'plc-can-01',
     name: 'Catedral de Pedra (Nossa Senhora de Lourdes)',
     slug: 'catedral-de-pedra',
     city: 'Canela',
@@ -455,7 +471,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-can-02',
+    id: 'a0000001-0000-0000-0000-000000000008',
+    legacy_id: 'plc-can-02',
+    source_id: 'plc-can-02',
     name: 'Parque do Caracol e Cascata do Caracol',
     slug: 'parque-do-caracol',
     city: 'Canela',
@@ -514,7 +532,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-can-03',
+    id: 'a0000001-0000-0000-0000-000000000007',
+    legacy_id: 'plc-can-03',
+    source_id: 'plc-can-03',
     name: 'Skyglass Canela',
     slug: 'skyglass-canela',
     city: 'Canela',
@@ -567,7 +587,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-can-04',
+    id: 'a0000001-0000-0000-0000-000000000009',
+    legacy_id: 'plc-can-04',
+    source_id: 'plc-can-04',
     name: 'Alpen Park',
     slug: 'alpen-park',
     city: 'Canela',
@@ -626,7 +648,9 @@ export const SEED_PLACES: Place[] = [
 
   // NOVA PETRÓPOLIS
   {
-    id: 'plc-nvp-01',
+    id: 'a0000001-0000-0000-0000-000000000011',
+    legacy_id: 'plc-nvp-01',
+    source_id: 'plc-nvp-01',
     name: 'Labirinto Verde e Praça das Flores',
     slug: 'labirinto-verde',
     city: 'Nova Petrópolis',
@@ -675,7 +699,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-nvp-02',
+    id: 'a0000001-0000-0000-0000-000000000012',
+    legacy_id: 'plc-nvp-02',
+    source_id: 'plc-nvp-02',
     name: 'Parque Aldeia do Imigrante',
     slug: 'aldeia-do-imigrante',
     city: 'Nova Petrópolis',
@@ -734,7 +760,9 @@ export const SEED_PLACES: Place[] = [
     updated_at: '2026-03-01T00:00:00Z'
   },
   {
-    id: 'plc-nvp-03',
+    id: 'a0000001-0000-0000-0000-000000000013',
+    legacy_id: 'plc-nvp-03',
+    source_id: 'plc-nvp-03',
     name: 'Ninho das Águias',
     slug: 'ninho-das-aguias',
     city: 'Nova Petrópolis',

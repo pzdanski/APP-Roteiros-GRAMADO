@@ -244,15 +244,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setIsLoadingPlaces(true);
     try {
       const res = await fetch('/api/admin/places', {
-        headers: { 'x-admin-key': adminApiKey }
+        headers: getAdminHeaders(),
+        credentials: 'include'
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.places) setPlaces(data.places);
+        if (data.places && Array.isArray(data.places) && data.places.length > 0) {
+          setPlaces(data.places);
+        }
         if (data.metrics) setCatalogMetrics(data.metrics);
+      } else {
+        // Fallback to /api/db/places if admin session not yet resolved
+        const pubRes = await fetch('/api/db/places');
+        if (pubRes.ok) {
+          const pubPlaces = await pubRes.json();
+          if (Array.isArray(pubPlaces) && pubPlaces.length > 0) {
+            setPlaces(pubPlaces);
+          }
+        }
       }
       const cgRes = await fetch('/api/admin/places/costguard', {
-        headers: { 'x-admin-key': adminApiKey }
+        headers: getAdminHeaders(),
+        credentials: 'include'
       });
       if (cgRes.ok) {
         const cgData = await cgRes.json();
@@ -260,10 +273,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
     } catch (err) {
       console.warn('Error fetching places:', err);
+      try {
+        const pubRes = await fetch('/api/db/places');
+        if (pubRes.ok) {
+          const pubPlaces = await pubRes.json();
+          if (Array.isArray(pubPlaces) && pubPlaces.length > 0) {
+            setPlaces(pubPlaces);
+          }
+        }
+      } catch {}
     } finally {
       setIsLoadingPlaces(false);
     }
-  }, [adminApiKey]);
+  }, [getAdminHeaders]);
 
   React.useEffect(() => {
     fetchPlacesAndMetrics();
