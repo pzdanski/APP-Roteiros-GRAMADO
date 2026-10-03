@@ -15,7 +15,8 @@ import {
   Ticket,
   Instagram,
   Compass,
-  MessageCircle
+  MessageCircle,
+  BookOpen
 } from 'lucide-react';
 import { TripActivity } from '../types';
 import { formatPlaceCategory, formatRating, formatOpeningHours, formatDuration, formatSourceLabel, hasDivulgaContent, getPlaceHeroPhoto } from '../utils/formatters';
@@ -52,12 +53,35 @@ export const PlaceDetailModal: React.FC<PlaceDetailModalProps> = ({
     window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
   };
 
-  // Sprint 10A Section 5 Rule: Only show Divulga badge if verified own content exists
-  const videoUrl = place.divulga_instagram_url || 
-                   place.divulga_youtube_url || 
-                   place.divulga_tiktok_url || 
-                   place.divulga_lugares_tip?.video_url || 
-                   place.divulga_content_url;
+  // Hotfix 10A.2 Section 6 & 7: Distinct content URL mapping
+  const youtubeUrl = (place.divulga_youtube_url && place.divulga_youtube_url.startsWith('http'))
+    ? place.divulga_youtube_url
+    : (place.divulga_lugares_tip?.video_url && place.divulga_lugares_tip.video_url.includes('youtu'))
+      ? place.divulga_lugares_tip.video_url
+      : null;
+
+  const rawVideoUrl = (place.divulga_youtube_url && place.divulga_youtube_url.startsWith('http'))
+    ? place.divulga_youtube_url
+    : (place.divulga_tiktok_url && place.divulga_tiktok_url.startsWith('http'))
+      ? place.divulga_tiktok_url
+      : (place.divulga_lugares_tip?.video_url && place.divulga_lugares_tip.video_url.startsWith('http'))
+        ? place.divulga_lugares_tip.video_url
+        : null;
+
+  const hasVideo = Boolean(rawVideoUrl);
+
+  const experienceUrl = (place.divulga_instagram_url && place.divulga_instagram_url.startsWith('http'))
+    ? place.divulga_instagram_url
+    : null;
+  const hasExperience = Boolean(experienceUrl);
+
+  const guideUrl = (place.divulga_article_url && place.divulga_article_url.startsWith('http'))
+    ? place.divulga_article_url
+    : (place.divulga_content_url && place.divulga_content_url.startsWith('http'))
+      ? place.divulga_content_url
+      : null;
+  const hasGuide = Boolean(guideUrl);
+
   const hasDivulgaContentFlag = hasDivulgaContent(place);
 
   // 9.4 Ratings
@@ -229,22 +253,58 @@ export const PlaceDetailModal: React.FC<PlaceDetailModalProps> = ({
                 </p>
               )}
 
-              {videoUrl && (
-                <button
-                  type="button"
-                  onClick={() => setIsPlayingVideo(!isPlayingVideo)}
-                  className="mt-1 w-full py-2 bg-white hover:bg-[#F3EFE6] text-[#1B4332] font-semibold text-xs rounded-xl border border-[#D8C9AE] transition-colors flex items-center justify-center gap-1.5 shadow-xs"
-                >
-                  <Play className="w-3.5 h-3.5 fill-[#1B4332]" />
-                  <span>{isPlayingVideo ? 'Ocultar vídeo' : 'Veja nossa experiência'}</span>
-                </button>
-              )}
+              {/* Hotfix 10A.2 Section 7: Contextual action buttons */}
+              <div className="flex flex-wrap gap-2 pt-1.5">
+                {/* [ Assistir vídeo ] */}
+                {hasVideo && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (youtubeUrl) {
+                        setIsPlayingVideo(!isPlayingVideo);
+                      } else if (rawVideoUrl) {
+                        window.open(rawVideoUrl, '_blank', 'noopener,noreferrer');
+                      }
+                    }}
+                    className="flex-1 min-w-[125px] py-2 px-3 bg-white hover:bg-[#F3EFE6] text-[#1B4332] font-semibold text-xs rounded-xl border border-[#D8C9AE] transition-colors flex items-center justify-center gap-1.5 shadow-xs"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-[#1B4332]" />
+                    <span>{isPlayingVideo ? 'Ocultar vídeo' : 'Assistir vídeo'}</span>
+                  </button>
+                )}
 
-              {isPlayingVideo && videoUrl && (
+                {/* [ Ver nossa experiência ] */}
+                {hasExperience && experienceUrl && (
+                  <a
+                    href={experienceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 min-w-[140px] py-2 px-3 bg-white hover:bg-[#F3EFE6] text-[#1B4332] font-semibold text-xs rounded-xl border border-[#D8C9AE] transition-colors flex items-center justify-center gap-1.5 shadow-xs"
+                  >
+                    <Instagram className="w-3.5 h-3.5 text-[#1B4332]" />
+                    <span>Ver nossa experiência</span>
+                  </a>
+                )}
+
+                {/* [ Ler guia ] */}
+                {hasGuide && guideUrl && (
+                  <a
+                    href={guideUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 min-w-[110px] py-2 px-3 bg-[#1B4332] hover:bg-[#143326] text-white font-semibold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-xs"
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>Ler guia</span>
+                  </a>
+                )}
+              </div>
+
+              {isPlayingVideo && youtubeUrl && (
                 <div className="pt-2">
                   <div className="aspect-video bg-black rounded-xl overflow-hidden shadow-inner flex items-center justify-center text-white text-xs">
                     <iframe 
-                      src={videoUrl.includes('embed') ? videoUrl : `https://www.youtube.com/embed/${videoUrl.split('v=')[1] || 'dQw4w9WgXcQ'}?autoplay=1`} 
+                      src={youtubeUrl.includes('embed') ? youtubeUrl : `https://www.youtube.com/embed/${youtubeUrl.split('v=')[1] || youtubeUrl.split('/').pop() || ''}?autoplay=1`} 
                       title="Vídeo Divulga Lugares"
                       className="w-full h-full"
                       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"

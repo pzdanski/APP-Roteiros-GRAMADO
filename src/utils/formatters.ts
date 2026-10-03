@@ -323,9 +323,11 @@ export function hasDivulgaContent(place: any): boolean {
     place.divulga_instagram_url,
     place.divulga_youtube_url,
     place.divulga_tiktok_url,
+    place.divulga_article_url,
     place.divulga_content_url,
     place.divulga_lugares_tip?.video_url,
-    place.divulga_lugares_tip?.media_url
+    place.divulga_lugares_tip?.media_url,
+    place.divulga_lugares_tip?.article_url
   ];
 
   const hasValidUrl = candidateUrls.some(url => {
@@ -337,6 +339,7 @@ export function hasDivulgaContent(place: any): boolean {
       lower.includes('instagram.com') ||
       lower.includes('tiktok.com') ||
       lower.includes('divulgalugares.com.br') ||
+      lower.includes('duo21.com.br') ||
       lower.startsWith('https://')
     );
   });

@@ -69,10 +69,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null);
   const [liveUsage, setLiveUsage] = useState<any>(null);
 
-  // Sprint 9.2 Section 9 & 10: Campaign Management & Commercial Analytics State
+  // Sprint 9.2 & Hotfix 10A.2: Administrative Session & Key State
   const [adminApiKey, setAdminApiKey] = useState<string>(() => {
-    return localStorage.getItem('duo21_admin_key') || 'duo21-dev-admin-secret-key-change-in-prod';
+    return localStorage.getItem('duo21_admin_key') || '';
   });
+  const [adminSessionToken, setAdminSessionToken] = useState<string | null>(null);
+
+  // Establish Admin Session for Control Plane without exposing API key
+  React.useEffect(() => {
+    fetch('/api/admin/session', {
+      method: 'POST',
+      credentials: 'include'
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.sessionToken) {
+          setAdminSessionToken(data.sessionToken);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const getAdminHeaders = React.useCallback((extraHeaders: Record<string, string> = {}) => {
+    const headers: Record<string, string> = { ...extraHeaders };
+    if (adminApiKey) {
+      headers['x-admin-key'] = adminApiKey;
+    }
+    if (adminSessionToken) {
+      headers['x-admin-session'] = adminSessionToken;
+    }
+    return headers;
+  }, [adminApiKey, adminSessionToken]);
+
   const [campaignData, setCampaignData] = useState<any>(null);
   const [campaignLoading, setCampaignLoading] = useState(false);
   const [campaignError, setCampaignError] = useState<string | null>(null);
@@ -127,9 +155,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setCampaignError(null);
     try {
       const res = await fetch('/api/admin/campaign', {
-        headers: {
-          'x-admin-key': adminApiKey
-        }
+        headers: getAdminHeaders(),
+        credentials: 'include'
       });
       if (!res.ok) {
         // Fallback to public status if unauthorized
@@ -2034,13 +2061,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         )}
       </div>
 
-      {/* Place Editor Modal (Sprint 10A Section 3) */}
+      {/* Place Editor Modal (Sprint 10A Section 3 & Hotfix 10A.2) */}
       <PlaceEditorModal
         place={editingPlace}
         isOpen={Boolean(editingPlace)}
         onClose={() => setEditingPlace(null)}
         onSave={handleSavePlace}
         adminApiKey={adminApiKey}
+        adminSessionToken={adminSessionToken}
       />
     </div>
   );

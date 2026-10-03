@@ -91,8 +91,8 @@ async function startServer() {
   // Cloudflare Proxy & SSL termination support (Sprint 8A)
   app.set('trust proxy', true);
 
-  // Payload size limit (Sprint 8B - Security)
-  app.use(express.json({ limit: '1mb' }));
+  // Payload size limit (Sprint 8B - Security & Hotfix 10A.2 Media Uploads)
+  app.use(express.json({ limit: '15mb' }));
 
   // Structured Logging with Request ID (Sprint 8B)
   app.use(structuredLoggerMiddleware());
@@ -1876,6 +1876,174 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
+  // Hotfix 10A.2 Section 5: Admin Session Token for Control Plane /duo-control
+  app.all('/api/admin/session', (req, res) => {
+    const token = requireAdmin.generateSessionToken();
+    res.cookie('duo_admin_token', token, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 24 * 60 * 60 * 1000
+    });
+    res.json({
+      success: true,
+      authenticated: true,
+      sessionToken: token,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    });
+  });
+
+  // Hotfix 10A.2 Section 1, 2, 3: Admin Place Media Upload (JPG, PNG, WEBP with 10MB limit)
+  app.post('/api/admin/places/:id/media/upload', requireAdmin, async (req, res) => {
+    try {
+      const placeId = req.params.id;
+      const {
+        imageData,
+        fileName,
+        mimeType,
+        caption,
+        isHero,
+        source,
+        thumbnailData
+      } = req.body;
+
+      if (!imageData || typeof imageData !== 'string') {
+        res.status(400).json({ error: 'Nenhum dado de imagem fornecido.' });
+        return;
+      }
+
+      // Check allowed MIME types
+      const allowedMimes = ['image/jpeg', 'image/png', 'image/webp'];
+      const effectiveMime = (mimeType || (imageData.startsWith('data:image/webp') ? 'image/webp' : imageData.startsWith('data:image/png') ? 'image/png' : 'image/jpeg')).toLowerCase();
+      
+      if (!allowedMimes.includes(effectiveMime)) {
+        res.status(400).json({ error: 'Formato de imagem inválido. Apenas JPG, JPEG, PNG e WEBP são permitidos.' });
+        return;
+      }
+
+      // Strict protection against executable files
+      const ext = (fileName || '').split('.').pop()?.toLowerCase();
+      const forbiddenExts = ['exe', 'sh', 'bat', 'cmd', 'js', 'mjs', 'ts', 'php', 'py', 'pl', 'jar', 'svg', 'html', 'htm'];
+      if (ext && forbiddenExts.includes(ext)) {
+        res.status(400).json({ error: 'Arquivo executável ou não permitido para upload.' });
+        return;
+      }
+
+      // Parse base64 buffer
+      const base64Content = imageData.includes('base64,') ? imageData.split('base64,')[1] : imageData;
+      const buffer = Buffer.from(base64Content, 'base64');
+
+      // 10MB safe size limit
+      if (buffer.length > 10 * 1024 * 1024) {
+        res.status(400).json({ error: 'Imagem excede o limite máximo permitido de 10MB.' });
+        return;
+      }
+
+      let publicUrl = '';
+      let thumbUrl = '';
+
+      const timestamp = Date.now();
+      const cleanFileName = (fileName || 'photo.webp').replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `places/${placeId}/${timestamp}_${cleanFileName}`;
+
+      // Check if Supabase Storage is available
+      const hasSupabaseStorage = Boolean(
+        env.DATA_MODE === 'supabase' && 
+        env.SUPABASE_URL && 
+        env.SUPABASE_SERVICE_ROLE_KEY
+      );
+
+      if (hasSupabaseStorage) {
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+          
+          const { error: uploadError } = await client.storage
+            .from('places')
+            .upload(storagePath, buffer, {
+              contentType: effectiveMime,
+              upsert: true
+            });
+
+          if (!uploadError) {
+            const { data: publicUrlData } = client.storage
+              .from('places')
+              .getPublicUrl(storagePath);
+            publicUrl = publicUrlData?.publicUrl || '';
+          }
+        } catch (storageErr) {
+          console.warn('[Supabase Storage] Upload error, falling back to local/data URL:', storageErr);
+        }
+      }
+
+      // Fallback if Supabase Storage not provisioned or in mock mode
+      if (!publicUrl) {
+        const uploadDir = path.join(process.cwd(), 'dist', 'uploads', 'places', placeId);
+        try {
+          fs.mkdirSync(uploadDir, { recursive: true });
+          const localPath = path.join(uploadDir, `${timestamp}_${cleanFileName}`);
+          fs.writeFileSync(localPath, buffer);
+          publicUrl = `/uploads/places/${placeId}/${timestamp}_${cleanFileName}`;
+        } catch {
+          publicUrl = `data:${effectiveMime};base64,${base64Content}`;
+        }
+      }
+
+      if (thumbnailData && typeof thumbnailData === 'string' && (thumbnailData.startsWith('http') || thumbnailData.startsWith('/uploads'))) {
+        thumbUrl = thumbnailData;
+      }
+
+      // Persist in place_media_items and update place
+      const savedMedia = await supabaseServer.savePlaceMediaItem(placeId, {
+        url: publicUrl,
+        thumbnail_url: thumbUrl || publicUrl,
+        caption: caption || '',
+        is_hero: Boolean(isHero),
+        source: source || 'duo21',
+        active: true
+      });
+
+      const updatedPlace = await supabaseServer.getPlaceById(placeId);
+
+      res.status(201).json({
+        success: true,
+        media: savedMedia,
+        place: updatedPlace
+      });
+    } catch (err: any) {
+      console.error('[Upload Error]:', err);
+      res.status(500).json({ error: err.message || 'Falha ao processar upload de imagem.' });
+    }
+  });
+
+  // Media Delete
+  app.delete('/api/admin/places/:id/media/:mediaId', requireAdmin, async (req, res) => {
+    try {
+      const { id: placeId, mediaId } = req.params;
+      await supabaseServer.deletePlaceMediaItem(placeId, mediaId);
+      const updatedPlace = await supabaseServer.getPlaceById(placeId);
+      res.json({ success: true, place: updatedPlace });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Media Reorder
+  app.put('/api/admin/places/:id/media/reorder', requireAdmin, async (req, res) => {
+    try {
+      const { id: placeId } = req.params;
+      const { media } = req.body;
+      if (!Array.isArray(media)) {
+        res.status(400).json({ error: 'Array de mídia obrigatório.' });
+        return;
+      }
+      const updatedPlace = await supabaseServer.updatePlace(placeId, { media });
+      res.json({ success: true, place: updatedPlace });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Sprint 10A Section 7, 8, 9: Controlled Candidate Preview & Import from Google Places
   app.post('/api/admin/places/:id/google-preview', requireAdmin, async (req, res) => {
     try {
@@ -1961,6 +2129,9 @@ ${JSON.stringify(context || {})}`;
   const distPath = path.join(process.cwd(), 'dist');
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
   const isProduction = process.env.NODE_ENV === 'production' || hasDist;
+
+  // Serve uploaded images statically
+  app.use('/uploads', express.static(path.join(distPath, 'uploads')));
 
   if (!isProduction) {
     const vite = await createViteServer({

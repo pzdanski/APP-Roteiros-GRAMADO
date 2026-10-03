@@ -22,7 +22,12 @@ import {
   MessageCircle,
   Globe,
   Instagram,
-  Ticket
+  Ticket,
+  Upload,
+  Image as ImageIcon,
+  BookOpen,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import { Place, PlaceMedia, MediaSource } from '../types';
 import { calculatePlaceDataQuality } from '../utils/dataQuality';
@@ -33,7 +38,8 @@ interface PlaceEditorModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (updatedPlace: Place) => Promise<void>;
-  adminApiKey: string;
+  adminApiKey?: string;
+  adminSessionToken?: string | null;
 }
 
 type EditorTab = 'info' | 'price' | 'hours' | 'links' | 'divulga' | 'media' | 'google';
@@ -53,7 +59,8 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
   isOpen,
   onClose,
   onSave,
-  adminApiKey
+  adminApiKey,
+  adminSessionToken
 }) => {
   if (!isOpen || !place) return null;
 
@@ -64,6 +71,9 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // New Media Form state
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [showUrlForm, setShowUrlForm] = useState(false);
   const [newMediaUrl, setNewMediaUrl] = useState('');
   const [newMediaCaption, setNewMediaCaption] = useState('');
   const [newMediaSource, setNewMediaSource] = useState<MediaSource>('duo21');
@@ -178,7 +188,179 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
     }));
   };
 
-  // Add media handler
+  // Hotfix 10A.2 Section 2: Client-side Image Optimization Pipeline
+  const optimizeImageForUpload = async (file: File): Promise<{
+    imageData: string;
+    thumbnailData: string;
+    mimeType: string;
+    width: number;
+    height: number;
+  }> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Erro ao ler arquivo da imagem'));
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('Formato de imagem inválido ou corrompido'));
+        img.onload = () => {
+          const origWidth = img.width;
+          const origHeight = img.height;
+
+          // 1. Scaled Hero/Detail canvas (max 1600px)
+          const maxDimension = 1600;
+          let targetWidth = origWidth;
+          let targetHeight = origHeight;
+          if (targetWidth > maxDimension || targetHeight > maxDimension) {
+            if (targetWidth > targetHeight) {
+              targetHeight = Math.round((targetHeight * maxDimension) / targetWidth);
+              targetWidth = maxDimension;
+            } else {
+              targetWidth = Math.round((targetWidth * maxDimension) / targetHeight);
+              targetHeight = maxDimension;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            return resolve({
+              imageData: e.target?.result as string,
+              thumbnailData: e.target?.result as string,
+              mimeType: file.type || 'image/jpeg',
+              width: origWidth,
+              height: origHeight
+            });
+          }
+
+          ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+          let dataUrl = canvas.toDataURL('image/webp', 0.85);
+          let mimeType = 'image/webp';
+          if (!dataUrl.startsWith('data:image/webp')) {
+            dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            mimeType = 'image/jpeg';
+          }
+
+          // 2. Thumbnail canvas (max 300px)
+          const thumbCanvas = document.createElement('canvas');
+          const thumbMax = 300;
+          let thumbW = targetWidth;
+          let thumbH = targetHeight;
+          if (thumbW > thumbMax || thumbH > thumbMax) {
+            if (thumbW > thumbH) {
+              thumbH = Math.round((thumbH * thumbMax) / thumbW);
+              thumbW = thumbMax;
+            } else {
+              thumbW = Math.round((thumbW * thumbMax) / thumbH);
+              thumbH = thumbMax;
+            }
+          }
+          thumbCanvas.width = thumbW;
+          thumbCanvas.height = thumbH;
+          const thumbCtx = thumbCanvas.getContext('2d');
+          let thumbUrl = dataUrl;
+          if (thumbCtx) {
+            thumbCtx.drawImage(canvas, 0, 0, thumbW, thumbH);
+            thumbUrl = thumbCanvas.toDataURL('image/webp', 0.80);
+          }
+
+          resolve({
+            imageData: dataUrl,
+            thumbnailData: thumbUrl,
+            mimeType,
+            width: targetWidth,
+            height: targetHeight
+          });
+        };
+        img.src = e.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const getAuthHeaders = (extraHeaders: Record<string, string> = {}) => {
+    const headers: Record<string, string> = { ...extraHeaders };
+    if (adminApiKey) {
+      headers['x-admin-key'] = adminApiKey;
+    }
+    if (adminSessionToken) {
+      headers['x-admin-session'] = adminSessionToken;
+    }
+    return headers;
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // 1. Extension & MIME validation
+    const validMimes = ['image/jpeg', 'image/png', 'image/webp'];
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    const validExts = ['jpg', 'jpeg', 'png', 'webp'];
+
+    if (!validMimes.includes(file.type.toLowerCase()) && (!ext || !validExts.includes(ext))) {
+      setError('Formato inválido. Apenas imagens JPG, JPEG, PNG e WEBP são permitidas.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    // 2. Size limit (10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      setError('O arquivo excede o limite máximo permitido de 10MB.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    setIsUploading(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const optimized = await optimizeImageForUpload(file);
+      const res = await fetch(`/api/admin/places/${formData.id}/media/upload`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify({
+          imageData: optimized.imageData,
+          thumbnailData: optimized.thumbnailData,
+          fileName: file.name,
+          mimeType: optimized.mimeType,
+          caption: newMediaCaption.trim() || file.name.replace(/\.[^/.]+$/, ''),
+          isHero: newMediaIsHero || (!formData.media || formData.media.length === 0),
+          source: newMediaSource || 'duo21'
+        })
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Falha no upload da foto');
+      }
+
+      const resData = await res.json();
+      if (resData.place?.media) {
+        setFormData(prev => ({ ...prev, media: resData.place.media }));
+      } else if (resData.media) {
+        const current = Array.isArray(formData.media) ? [...formData.media] : [];
+        if (resData.media.is_hero) {
+          current.forEach(m => { m.is_hero = false; });
+        }
+        setFormData(prev => ({ ...prev, media: [...current, resData.media] }));
+      }
+
+      setSuccessMessage('Foto enviada e otimizada com sucesso!');
+      setNewMediaCaption('');
+      setNewMediaIsHero(false);
+    } catch (err: any) {
+      setError(`Erro ao enviar foto: ${err.message}`);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  // Add media handler (Secondary option by URL)
   const handleAddMedia = () => {
     if (!newMediaUrl.trim().startsWith('http')) {
       setError('Por favor, informe uma URL de imagem válida (começando com http:// ou https://).');
@@ -219,13 +401,45 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
     setFormData(prev => ({ ...prev, media: updated }));
   };
 
-  const handleRemoveMedia = (mediaUrl: string) => {
-    const updated = (formData.media || []).filter(m => m.url !== mediaUrl);
-    // If we removed the hero, make the first one hero if exists
+  const handleRemoveMedia = async (mediaItem: PlaceMedia) => {
+    const mediaIdOrUrl = mediaItem.id || mediaItem.url;
+    try {
+      await fetch(`/api/admin/places/${formData.id}/media/${encodeURIComponent(mediaIdOrUrl)}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+        credentials: 'include'
+      }).catch(() => {});
+    } catch {
+      // Local removal proceeds
+    }
+
+    const updated = (formData.media || []).filter(m => m.url !== mediaItem.url && m.id !== mediaItem.id);
     if (updated.length > 0 && !updated.some(m => m.is_hero)) {
       updated[0].is_hero = true;
     }
     setFormData(prev => ({ ...prev, media: updated }));
+  };
+
+  const handleMoveMedia = async (index: number, direction: 'up' | 'down') => {
+    const current = Array.isArray(formData.media) ? [...formData.media] : [];
+    const targetIdx = direction === 'up' ? index - 1 : index + 1;
+    if (targetIdx < 0 || targetIdx >= current.length) return;
+
+    const [item] = current.splice(index, 1);
+    current.splice(targetIdx, 0, item);
+    const reordered = current.map((m, idx) => ({ ...m, order: idx + 1 }));
+    setFormData(prev => ({ ...prev, media: reordered }));
+
+    try {
+      await fetch(`/api/admin/places/${formData.id}/media/reorder`, {
+        method: 'PUT',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify({ media: reordered })
+      });
+    } catch {
+      // Local reordering is preserved and saved on submit
+    }
   };
 
   // Google Places Preview
@@ -237,10 +451,8 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
     try {
       const res = await fetch(`/api/admin/places/${place.id}/google-preview`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-key': adminApiKey
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
         body: JSON.stringify({ query: googleSearchQuery })
       });
 
@@ -262,10 +474,8 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
     try {
       const res = await fetch(`/api/admin/places/${place.id}/google-import`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-key': adminApiKey
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
         body: JSON.stringify({
           candidate: googleCandidateResult.candidate,
           options: googleImportOptions
@@ -1003,17 +1213,31 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
                         className="w-full p-2.5 bg-white border border-[#E7DFCE] rounded-xl text-xs text-[#1E293B] outline-none"
                       />
                     </div>
+                    {/* Hotfix 10A.2 Section 6: DUO21 / Divulga Article URL */}
+                    <div>
+                      <label className="text-[11px] font-bold text-[#64748B] block mb-1">Artigo / Guia DUO21 ou Divulga Lugares</label>
+                      <input
+                        type="url"
+                        value={formData.divulga_article_url || ''}
+                        onChange={(e) => handleFieldChange('divulga_article_url', e.target.value)}
+                        placeholder="https://duo21.com.br/artigos/guia-ou-roteiro..."
+                        className="w-full p-2.5 bg-white border border-[#E7DFCE] rounded-xl text-xs text-[#1E293B] outline-none"
+                      />
+                      <span className="text-[10px] text-[#7A6F5D] mt-0.5 block">
+                        Permite ao turista acessar o guia ou matéria completa sobre o local.
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* TAB F: MÍDIA & FOTOS */}
+          {/* TAB F: MÍDIA & FOTOS (Hotfix 10A.2: Upload Principal + Otimização) */}
           {activeTab === 'media' && (
             <div className="space-y-4">
-              <div className="p-4 bg-white rounded-2xl border border-[#E7DFCE] space-y-3">
-                <div className="flex items-center justify-between pb-2 border-b border-[#F1EBE0]">
+              <div className="p-4 bg-white rounded-2xl border border-[#E7DFCE] space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b border-[#F1EBE0]">
                   <div>
                     <span className="text-xs font-bold text-[#1E293B] block">Galeria e Prioridade de Fotos</span>
                     <span className="text-[11px] text-[#7A6F5D]">
@@ -1022,60 +1246,139 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
                   </div>
                 </div>
 
-                {/* Add Photo Form */}
-                <div className="p-3 bg-[#FAF9F6] rounded-xl border border-[#E7DFCE] space-y-3">
-                  <span className="text-xs font-bold text-[#1B4332] block">Adicionar Nova Foto</span>
-                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
-                    <div className="sm:col-span-2">
-                      <input
-                        type="url"
-                        value={newMediaUrl}
-                        onChange={(e) => setNewMediaUrl(e.target.value)}
-                        placeholder="URL da Imagem (https://...)"
-                        className="w-full p-2 bg-white border border-[#E7DFCE] rounded-lg text-xs outline-none"
-                      />
+                {/* 1. OPÇÃO PRINCIPAL: Upload de Arquivo Local com Otimização */}
+                <div className="p-4 bg-[#FAF9F6] rounded-xl border-2 border-dashed border-[#D8C9AE] space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-bold text-[#1B4332] flex items-center gap-1.5">
+                        <Upload className="w-4 h-4 text-[#1B4332]" />
+                        Upload Direto de Fotos (Opção Principal)
+                      </span>
+                      <span className="text-[11px] text-[#64748B] block mt-0.5">
+                        Formatos permitidos: JPG, JPEG, PNG, WEBP (limite máx. 10MB). Otimização e compressão automática WebP.
+                      </span>
                     </div>
+
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      onChange={handleFileUpload}
+                      accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+                      className="hidden"
+                      id="place-media-file-input"
+                    />
+
+                    <button
+                      type="button"
+                      disabled={isUploading}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="px-4 py-2.5 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      {isUploading ? (
+                        <>
+                          <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          <span>Otimizando & Enviando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>[ + Enviar foto ]</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-[#F1EBE0]">
                     <div>
                       <input
                         type="text"
                         value={newMediaCaption}
                         onChange={(e) => setNewMediaCaption(e.target.value)}
-                        placeholder="Legenda da foto"
+                        placeholder="Legenda da foto (opcional antes de enviar)"
                         className="w-full p-2 bg-white border border-[#E7DFCE] rounded-lg text-xs outline-none"
                       />
                     </div>
-                    <div>
-                      <select
-                        value={newMediaSource}
-                        onChange={(e) => setNewMediaSource(e.target.value as MediaSource)}
-                        className="w-full p-2 bg-white border border-[#E7DFCE] rounded-lg text-xs font-bold outline-none"
-                      >
-                        <option value="duo21">DUO21 / Manual (Prioritária)</option>
-                        <option value="partner">Parceiro Oficial</option>
-                        <option value="official">Institucional Oficial</option>
-                        <option value="google_places">Google Places</option>
-                      </select>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5 text-xs text-[#475569] cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newMediaIsHero}
+                          onChange={(e) => setNewMediaIsHero(e.target.checked)}
+                          className="rounded text-[#1B4332]"
+                        />
+                        <span>Definir próximo upload como Foto de Capa</span>
+                      </label>
                     </div>
                   </div>
+                </div>
 
-                  <div className="flex items-center justify-between pt-1">
-                    <label className="flex items-center gap-1.5 text-xs text-[#475569] cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={newMediaIsHero}
-                        onChange={(e) => setNewMediaIsHero(e.target.checked)}
-                        className="rounded text-[#1B4332]"
-                      />
-                      <span>Definir imediatamente como Foto de Capa</span>
-                    </label>
+                {/* 2. OPÇÃO SECUNDÁRIA: Adicionar por URL */}
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowUrlForm(!showUrlForm)}
+                    className="text-xs font-semibold text-[#1B4332] hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>{showUrlForm ? '− Ocultar opção por URL' : '+ Adicionar por URL (Opção secundária)'}</span>
+                  </button>
 
-                    <button
-                      onClick={handleAddMedia}
-                      className="px-3 py-1.5 bg-[#1B4332] text-white text-xs font-bold rounded-lg hover:bg-[#143326] transition-colors"
-                    >
-                      + Inserir Foto
-                    </button>
-                  </div>
+                  {showUrlForm && (
+                    <div className="mt-2 p-3 bg-[#FAF9F6] rounded-xl border border-[#E7DFCE] space-y-3">
+                      <span className="text-xs font-bold text-[#7A6F5D] block">Vincular Imagem Hospedada</span>
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                        <div className="sm:col-span-2">
+                          <input
+                            type="url"
+                            value={newMediaUrl}
+                            onChange={(e) => setNewMediaUrl(e.target.value)}
+                            placeholder="URL da Imagem (https://...)"
+                            className="w-full p-2 bg-white border border-[#E7DFCE] rounded-lg text-xs outline-none"
+                          />
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            value={newMediaCaption}
+                            onChange={(e) => setNewMediaCaption(e.target.value)}
+                            placeholder="Legenda da foto"
+                            className="w-full p-2 bg-white border border-[#E7DFCE] rounded-lg text-xs outline-none"
+                          />
+                        </div>
+                        <div>
+                          <select
+                            value={newMediaSource}
+                            onChange={(e) => setNewMediaSource(e.target.value as MediaSource)}
+                            className="w-full p-2 bg-white border border-[#E7DFCE] rounded-lg text-xs font-bold outline-none"
+                          >
+                            <option value="duo21">DUO21 / Manual (Prioritária)</option>
+                            <option value="partner">Parceiro Oficial</option>
+                            <option value="official">Institucional Oficial</option>
+                            <option value="google_places">Google Places</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1">
+                        <label className="flex items-center gap-1.5 text-xs text-[#475569] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={newMediaIsHero}
+                            onChange={(e) => setNewMediaIsHero(e.target.checked)}
+                            className="rounded text-[#1B4332]"
+                          />
+                          <span>Definir imediatamente como Foto de Capa</span>
+                        </label>
+
+                        <button
+                          type="button"
+                          onClick={handleAddMedia}
+                          className="px-3 py-1.5 bg-[#1B4332] text-white text-xs font-bold rounded-lg hover:bg-[#143326] transition-colors"
+                        >
+                          + Inserir Foto por URL
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Media list */}
@@ -1086,16 +1389,18 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
 
                   {(!formData.media || formData.media.length === 0) ? (
                     <div className="p-6 text-center text-xs text-[#64748B] bg-[#FAF9F6] rounded-xl border border-[#F1EBE0]">
-                      Nenhuma foto cadastrada ainda. Adicione uma foto manual acima para elevar a qualidade do local.
+                      Nenhuma foto cadastrada ainda. Clique em <strong>[ + Enviar foto ]</strong> acima para cadastrar a primeira foto.
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {formData.media.map((m, idx) => (
                         <div key={idx} className="flex gap-3 p-2.5 bg-[#FAF9F6] rounded-xl border border-[#E7DFCE] items-center">
                           <img
-                            src={m.url}
+                            src={m.thumbnail_url || m.url}
                             alt={m.caption || 'Foto do local'}
                             className="w-16 h-16 object-cover rounded-lg shrink-0 border border-[#E7DFCE]"
+                            loading="lazy"
+                            decoding="async"
                           />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
@@ -1113,15 +1418,39 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
                             <div className="flex items-center gap-2 mt-2">
                               {!m.is_hero && (
                                 <button
+                                  type="button"
                                   onClick={() => handleSetHeroMedia(m.url)}
-                                  className="text-[10px] font-bold text-[#1B4332] hover:underline"
+                                  className="text-[10px] font-bold text-[#1B4332] hover:underline cursor-pointer"
                                 >
                                   Tornar Capa
                                 </button>
                               )}
+                              <div className="flex items-center gap-1">
+                                {idx > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveMedia(idx, 'up')}
+                                    title="Mover para cima"
+                                    className="p-1 text-slate-500 hover:text-slate-800 hover:bg-slate-200 rounded"
+                                  >
+                                    <ArrowUp className="w-3 h-3" />
+                                  </button>
+                                )}
+                                {formData.media && idx < formData.media.length - 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveMedia(idx, 'down')}
+                                    title="Mover para baixo"
+                                    className="p-1 text-slate-500 hover:text-slate-800 hover:bg-slate-200 rounded"
+                                  >
+                                    <ArrowDown className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
                               <button
-                                onClick={() => handleRemoveMedia(m.url)}
-                                className="text-[10px] font-bold text-rose-600 hover:underline flex items-center gap-0.5 ml-auto"
+                                type="button"
+                                onClick={() => handleRemoveMedia(m)}
+                                className="text-[10px] font-bold text-rose-600 hover:underline flex items-center gap-0.5 ml-auto cursor-pointer"
                               >
                                 <Trash2 className="w-3 h-3" />
                                 Remover

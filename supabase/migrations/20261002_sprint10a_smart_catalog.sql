@@ -40,6 +40,9 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'places' AND column_name = 'divulga_tiktok_url') THEN
         ALTER TABLE places ADD COLUMN divulga_tiktok_url TEXT;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'places' AND column_name = 'divulga_article_url') THEN
+        ALTER TABLE places ADD COLUMN divulga_article_url TEXT;
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'places' AND column_name = 'divulga_content_title') THEN
         ALTER TABLE places ADD COLUMN divulga_content_title TEXT;
     END IF;
@@ -88,6 +91,10 @@ CREATE TABLE IF NOT EXISTS place_media_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     place_id UUID NOT NULL REFERENCES places(id) ON DELETE CASCADE,
     url TEXT NOT NULL,
+    thumbnail_url TEXT,
+    card_url TEXT,
+    width INTEGER,
+    height INTEGER,
     caption TEXT,
     is_hero BOOLEAN DEFAULT false,
     is_logo BOOLEAN DEFAULT false,
@@ -98,7 +105,7 @@ CREATE TABLE IF NOT EXISTS place_media_items (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Defensive check: if table existed previously with TEXT place_id or missing foreign key
+-- Defensive check: if table existed previously with TEXT place_id or missing columns/foreign key
 DO $$
 BEGIN
     IF EXISTS (
@@ -106,6 +113,34 @@ BEGIN
         WHERE table_name = 'place_media_items' AND column_name = 'place_id' AND data_type = 'text'
     ) THEN
         ALTER TABLE place_media_items ALTER COLUMN place_id TYPE UUID USING place_id::uuid;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'place_media_items' AND column_name = 'thumbnail_url'
+    ) THEN
+        ALTER TABLE place_media_items ADD COLUMN thumbnail_url TEXT;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'place_media_items' AND column_name = 'card_url'
+    ) THEN
+        ALTER TABLE place_media_items ADD COLUMN card_url TEXT;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'place_media_items' AND column_name = 'width'
+    ) THEN
+        ALTER TABLE place_media_items ADD COLUMN width INTEGER;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'place_media_items' AND column_name = 'height'
+    ) THEN
+        ALTER TABLE place_media_items ADD COLUMN height INTEGER;
     END IF;
 
     IF EXISTS (
@@ -157,5 +192,38 @@ BEGIN
     ) THEN
         CREATE POLICY "Admin manage place media" ON place_media_items
             FOR ALL USING (auth.role() = 'service_role');
+    END IF;
+END $$;
+
+-- 5. Supabase Storage: idempotent bucket setup for 'places'
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'storage' AND table_name = 'buckets') THEN
+        INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+        VALUES (
+            'places',
+            'places',
+            true,
+            10485760, -- 10MB
+            ARRAY['image/jpeg', 'image/png', 'image/webp']
+        )
+        ON CONFLICT (id) DO UPDATE SET 
+            public = true,
+            file_size_limit = 10485760,
+            allowed_mime_types = ARRAY['image/jpeg', 'image/png', 'image/webp'];
+
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND schemaname = 'storage' AND policyname = 'Public Access places'
+        ) THEN
+            CREATE POLICY "Public Access places" ON storage.objects
+                FOR SELECT USING (bucket_id = 'places');
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND schemaname = 'storage' AND policyname = 'Admin Upload places'
+        ) THEN
+            CREATE POLICY "Admin Upload places" ON storage.objects
+                FOR ALL USING (bucket_id = 'places' AND (auth.role() = 'service_role' OR auth.role() = 'authenticated'));
+        END IF;
     END IF;
 END $$;

@@ -669,6 +669,7 @@ export class GooglePlacesServerProvider {
 
     // Preserve Divulga Content and Manual Pricing untouched
     updates.divulga_content_active = existing.divulga_content_active;
+    updates.divulga_article_url = existing.divulga_article_url;
     updates.is_divulga_lugares_partner = existing.is_divulga_lugares_partner;
     updates.price_info = existing.price_info;
 

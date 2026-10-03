@@ -130,6 +130,7 @@ export function mapRawPlaceToClientPlace(row: any): any {
     divulga_instagram_url: row.divulga_instagram_url || '',
     divulga_youtube_url: row.divulga_youtube_url || '',
     divulga_tiktok_url: row.divulga_tiktok_url || '',
+    divulga_article_url: row.divulga_article_url || '',
     divulga_content_title: row.divulga_content_title || '',
     google_place_id: row.google_place_id || '',
     google_last_sync_at: row.google_last_sync_at || null,
@@ -411,6 +412,109 @@ export const supabaseServer = {
     if (error) {
       throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     }
+    return true;
+  },
+
+  async savePlaceMediaItem(placeId: string, mediaItem: any): Promise<any> {
+    const id = mediaItem.id || `media_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const newMedia = {
+      id,
+      place_id: placeId,
+      url: mediaItem.url,
+      thumbnail_url: mediaItem.thumbnail_url || null,
+      card_url: mediaItem.card_url || null,
+      width: mediaItem.width || null,
+      height: mediaItem.height || null,
+      caption: mediaItem.caption || null,
+      is_hero: Boolean(mediaItem.is_hero),
+      is_logo: Boolean(mediaItem.is_logo),
+      display_order: Number(mediaItem.display_order || mediaItem.order || 0),
+      source: mediaItem.source || 'duo21',
+      active: mediaItem.active !== false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    if (env.DATA_MODE === 'mock' || !serverClient) {
+      const place = mockStore.places.find(p => p.id === placeId);
+      if (place) {
+        if (!Array.isArray(place.media)) place.media = [];
+        if (newMedia.is_hero) {
+          place.media.forEach((m: any) => { m.is_hero = false; });
+        }
+        place.media.push({
+          id: newMedia.id,
+          url: newMedia.url,
+          thumbnail_url: newMedia.thumbnail_url,
+          card_url: newMedia.card_url,
+          caption: newMedia.caption,
+          is_hero: newMedia.is_hero,
+          source: newMedia.source,
+          active: newMedia.active,
+          order: newMedia.display_order
+        });
+      }
+      return newMedia;
+    }
+
+    try {
+      await serverClient
+        .from('place_media_items')
+        .insert(newMedia);
+    } catch (e: any) {
+      console.warn('[place_media_items] insert warning:', e.message);
+    }
+
+    const place = await this.getPlaceById(placeId);
+    if (place) {
+      const currentMedia = Array.isArray(place.media) ? [...place.media] : [];
+      if (newMedia.is_hero) {
+        currentMedia.forEach(m => { m.is_hero = false; });
+      }
+      currentMedia.push({
+        id: newMedia.id,
+        url: newMedia.url,
+        thumbnail_url: newMedia.thumbnail_url,
+        card_url: newMedia.card_url,
+        caption: newMedia.caption,
+        is_hero: newMedia.is_hero,
+        source: newMedia.source,
+        active: newMedia.active,
+        order: newMedia.display_order
+      });
+      await this.updatePlace(placeId, { media: currentMedia });
+    }
+
+    return newMedia;
+  },
+
+  async deletePlaceMediaItem(placeId: string, mediaIdOrUrl: string): Promise<boolean> {
+    if (env.DATA_MODE === 'mock' || !serverClient) {
+      const place = mockStore.places.find(p => p.id === placeId);
+      if (place && Array.isArray(place.media)) {
+        place.media = place.media.filter((m: any) => m.id !== mediaIdOrUrl && m.url !== mediaIdOrUrl);
+      }
+      return true;
+    }
+
+    try {
+      await serverClient
+        .from('place_media_items')
+        .delete()
+        .or(`id.eq.${mediaIdOrUrl},url.eq.${mediaIdOrUrl}`);
+    } catch {
+      // ignore
+    }
+
+    const place = await this.getPlaceById(placeId);
+    if (place && Array.isArray(place.media)) {
+      const updatedMedia = place.media.filter((m: any) => m.id !== mediaIdOrUrl && m.url !== mediaIdOrUrl);
+      if (updatedMedia.length > 0 && !updatedMedia.some((m: any) => m.is_hero)) {
+        updatedMedia[0].is_hero = true;
+      }
+      await this.updatePlace(placeId, { media: updatedMedia });
+    }
+
     return true;
   },
 

@@ -173,6 +173,11 @@ export interface PlaceMedia {
   source?: MediaSource;
   video_url?: string;
   uploaded_at?: string;
+  // Hotfix 10A.2: Responsive & Optimized Image Variants
+  thumbnail_url?: string;
+  card_url?: string;
+  width?: number;
+  height?: number;
 }
 
 export interface Place {
@@ -266,6 +271,7 @@ export interface Place {
   divulga_instagram_url?: string;
   divulga_youtube_url?: string;
   divulga_tiktok_url?: string;
+  divulga_article_url?: string;
   divulga_content_title?: string;
   google_last_sync_at?: string;
   google_sync_status?: 'NOT_SYNCED' | 'RESOLVED' | 'ENRICHED' | 'FAILED' | 'CONFIG_REQUIRED';
