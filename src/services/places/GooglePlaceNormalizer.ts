@@ -30,6 +30,7 @@ export interface ResolvedPlace {
   businessStatus: 'OPERATIONAL' | 'CLOSED_TEMPORARILY' | 'CLOSED_PERMANENTLY';
   openingHours?: Record<string, string>;
   weekdayDescriptions?: string[];
+  types?: string[];
   rating?: number;
   userRatingCount?: number;
   provider: 'GOOGLE_PLACES' | 'SUPABASE' | 'CACHE' | 'MOCK';
@@ -113,6 +114,7 @@ export class GooglePlaceNormalizer {
       businessStatus: status,
       openingHours: Object.keys(openingHours).length > 0 ? openingHours : undefined,
       weekdayDescriptions: descriptions.length > 0 ? descriptions : undefined,
+      types: raw.types || [],
       rating: raw.rating,
       userRatingCount: raw.userRatingCount,
       provider,

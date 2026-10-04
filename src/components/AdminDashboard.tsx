@@ -76,7 +76,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [adminApiKey, setAdminApiKey] = useState<string>(() => {
     return localStorage.getItem('duo21_admin_key') || '';
   });
-  const [adminSessionToken, setAdminSessionToken] = useState<string | null>(null);
+  const [adminSessionToken, setAdminSessionToken] = useState<string | null>(() => {
+    return sessionStorage.getItem('duo21_admin_session') || null;
+  });
 
   // Establish Admin Session for Control Plane without exposing API key
   React.useEffect(() => {
@@ -88,18 +90,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       .then(data => {
         if (data?.sessionToken) {
           setAdminSessionToken(data.sessionToken);
+          sessionStorage.setItem('duo21_admin_session', data.sessionToken);
         }
       })
       .catch(() => {});
   }, []);
 
   const getAdminHeaders = React.useCallback((extraHeaders: Record<string, string> = {}) => {
-    const headers: Record<string, string> = { ...extraHeaders };
+    const headers: Record<string, string> = { 
+      'x-admin-control-plane': 'duo21',
+      ...extraHeaders 
+    };
     if (adminApiKey) {
       headers['x-admin-key'] = adminApiKey;
     }
-    if (adminSessionToken) {
-      headers['x-admin-session'] = adminSessionToken;
+    const token = adminSessionToken || sessionStorage.getItem('duo21_admin_session');
+    if (token) {
+      headers['x-admin-session'] = token;
     }
     return headers;
   }, [adminApiKey, adminSessionToken]);
@@ -131,6 +138,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [showMiniMundoModal, setShowMiniMundoModal] = useState(false);
   const [miniMundoTestResult, setMiniMundoTestResult] = useState<any>(null);
   const [isTestingMiniMundo, setIsTestingMiniMundo] = useState(false);
+  const isSubmittingMiniMundoRef = React.useRef(false);
   const [miniMundoConfirmed, setMiniMundoConfirmed] = useState(false);
   const [showAuditHistory, setShowAuditHistory] = useState(false);
   const [isLoadingPlaces, setIsLoadingPlaces] = useState(false);
@@ -140,6 +148,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [webhookData, setWebhookData] = useState<any>(null);
   const [recentEvents, setRecentEvents] = useState<any[]>([]);
   const [isLoadingHealth, setIsLoadingHealth] = useState(false);
+
+  const isGooglePlacesActive = Boolean(
+    costGuardMetrics?.enabled ?? (healthData?.places === 'connected')
+  );
 
   const fetchHealthAndWebhook = () => {
     setIsLoadingHealth(true);
@@ -314,7 +326,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   }, [fetchPlacesAndMetrics]);
 
   React.useEffect(() => {
-    if (activeTab === 'places') {
+    if (activeTab === 'places' || activeTab === 'apis') {
       fetchPlacesAndMetrics();
     }
   }, [activeTab, fetchPlacesAndMetrics]);
@@ -398,27 +410,80 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const handleRunMiniMundoPreActivation = async () => {
+    // Double-click protection via ref and state
+    if (isSubmittingMiniMundoRef.current || isTestingMiniMundo) return;
+    if (!miniMundoConfirmed) return;
+    
+    isSubmittingMiniMundoRef.current = true;
     setIsTestingMiniMundo(true);
     setMiniMundoTestResult(null);
+
     try {
       const res = await fetch('/api/admin/places/test-mini-mundo', {
         method: 'POST',
         headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
-        credentials: 'include'
+        credentials: 'include',
+        body: JSON.stringify({ confirmed: true })
       });
-      const data = await res.json();
-      setMiniMundoTestResult(data);
-      // Refresh metrics after test action
-      const cgRes = await fetch('/api/admin/places/costguard', {
-        headers: getAdminHeaders(),
-        credentials: 'include'
-      });
+
+      let data: any;
+      try {
+        data = await res.json();
+      } catch {
+        data = { error: `HTTP ${res.status}: Resposta inesperada do servidor` };
+      }
+
+      if (!res.ok) {
+        setMiniMundoTestResult({
+          success: false,
+          ready: false,
+          executedRealCall: false,
+          externalCallsCount: 0,
+          costGuardStatus: res.status === 401 ? 'UNAUTHORIZED' : 'HTTP_ERROR',
+          message: data.error || data.message || `Falha na requisição administrativa (HTTP ${res.status})`,
+          persistedToDatabase: false,
+          estimatedRequests: 0,
+          estimatedCostBrl: 0
+        });
+      } else {
+        setMiniMundoTestResult(data);
+      }
+
+      // Refresh Cost Guard metrics and audit records after test action
+      const [cgRes, auditRes] = await Promise.all([
+        fetch('/api/admin/places/costguard', {
+          headers: getAdminHeaders(),
+          credentials: 'include'
+        }),
+        fetch('/api/admin/places/costguard/audit?limit=20', {
+          headers: getAdminHeaders(),
+          credentials: 'include'
+        })
+      ]);
       if (cgRes.ok) {
         setCostGuardMetrics(await cgRes.json());
       }
+      if (auditRes.ok) {
+        const auditData = await auditRes.json();
+        if (Array.isArray(auditData)) {
+          setCostGuardAuditRecords(auditData);
+        }
+      }
+      fetchHealthAndWebhook();
     } catch (err: any) {
-      setMiniMundoTestResult({ ready: false, message: `Erro ao testar Mini Mundo: ${err.message}` });
+      setMiniMundoTestResult({ 
+        success: false, 
+        ready: false, 
+        executedRealCall: false, 
+        externalCallsCount: 0,
+        costGuardStatus: 'NETWORK_ERROR',
+        message: `Erro ao testar Mini Mundo: ${err.message}`,
+        persistedToDatabase: false,
+        estimatedRequests: 0,
+        estimatedCostBrl: 0
+      });
     } finally {
+      isSubmittingMiniMundoRef.current = false;
       setIsTestingMiniMundo(false);
     }
   };
@@ -1059,8 +1124,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </button>
               </div>
 
-              <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-2xl text-xs text-amber-900 leading-relaxed">
-                ℹ️ <strong>Protocolo Sprint 10B:</strong> Esta ação valida todo o encadeamento de Cost Guard, FieldMask e DTOs, mas <strong>NÃO realiza chamadas externas</strong> enquanto <code>GOOGLE_PLACES_ENABLED=false</code>.
+              <div className={`p-3 rounded-2xl text-xs leading-relaxed border ${
+                isGooglePlacesActive
+                  ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950'
+                  : 'bg-amber-50/70 border-amber-200 text-amber-900'
+              }`}>
+                {isGooglePlacesActive ? (
+                  <span>
+                    🟢 <strong>Protocolo de Ativação Autorizado:</strong> <code>GOOGLE_PLACES_ENABLED=true</code> no servidor. O teste de 1 chamada controlada está autorizado, sujeito às cotas do Cost Guard e à confirmação explícita do administrador.
+                  </span>
+                ) : (
+                  <span>
+                    🔒 <strong>Protocolo de Bloqueio Ativo:</strong> Chamadas externas ao Google Places estão bloqueadas (<code>GOOGLE_PLACES_ENABLED=false</code>). Nenhuma chamada externa será realizada até que a flag seja ativada no servidor.
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -2407,6 +2484,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </button>
             </div>
 
+            {/* Protocol Status Banner (Hotfix 10B.1) */}
+            <div className={`p-3 rounded-2xl text-xs leading-relaxed border ${
+              isGooglePlacesActive
+                ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950'
+                : 'bg-amber-50/70 border-amber-200 text-amber-900'
+            }`}>
+              {isGooglePlacesActive ? (
+                <span>
+                  🟢 <strong>Protocolo de Ativação Autorizado:</strong> <code>GOOGLE_PLACES_ENABLED=true</code> no servidor. O teste de 1 chamada controlada está autorizado, sujeito às cotas do Cost Guard e à confirmação explícita do administrador.
+                </span>
+              ) : (
+                <span>
+                  🔒 <strong>Protocolo de Bloqueio Ativo:</strong> Chamadas externas ao Google Places estão bloqueadas (<code>GOOGLE_PLACES_ENABLED=false</code>). Nenhuma chamada externa será realizada até que a flag seja ativada no servidor.
+                </span>
+              )}
+            </div>
+
             {/* 9 Requirements of Mini Mundo test */}
             <div className="space-y-2 text-xs">
               <div className="p-3 bg-[#FAF9F6] rounded-2xl border border-[#E7DFCE] space-y-1.5">
@@ -2460,28 +2554,79 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </label>
 
               {miniMundoTestResult && (
-                <div className={`p-3 rounded-2xl border text-xs space-y-1 ${
-                  miniMundoTestResult.ready 
-                    ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
-                    : 'bg-rose-50 border-rose-200 text-rose-950'
+                <div className={`p-4 rounded-2xl border text-xs space-y-3 ${
+                  miniMundoTestResult.success
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                    : 'bg-rose-50 border-rose-300 text-rose-950'
                 }`}>
-                  <div className="flex items-center gap-1.5 font-bold">
-                    {miniMundoTestResult.ready ? (
-                      <>
-                        <CheckCircle2 className="w-4 h-4 text-emerald-700" />
-                        <span>Status: Pronto para Teste Defensivo</span>
-                      </>
-                    ) : (
-                      <>
-                        <AlertCircle className="w-4 h-4 text-rose-700" />
-                        <span>Status: Bloqueado</span>
-                      </>
-                    )}
+                  <div className="flex items-center justify-between font-bold">
+                    <div className="flex items-center gap-1.5">
+                      {miniMundoTestResult.success ? (
+                        <>
+                          <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                          <span className="text-emerald-900 font-extrabold">SUCESSO: Chamada Controlada Executada</span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertCircle className="w-4 h-4 text-rose-700" />
+                          <span className="text-rose-900 font-extrabold">BLOQUEIO / ERRO</span>
+                        </>
+                      )}
+                    </div>
+                    <span className="font-mono text-[10px] bg-white/80 px-2 py-0.5 rounded border border-current">
+                      Cost Guard: {miniMundoTestResult.costGuardStatus}
+                    </span>
                   </div>
-                  <p className="text-[11px] leading-relaxed">{miniMundoTestResult.message}</p>
-                  <div className="font-mono text-[10px] text-slate-600 pt-1">
-                    Chamadas Reais Executadas: {miniMundoTestResult.executedRealCall ? 'SIM' : '0 (ZERO)'} • Cost Guard: {miniMundoTestResult.costGuardStatus}
+
+                  <p className="text-xs leading-relaxed">{miniMundoTestResult.message}</p>
+
+                  {/* Operational Summary Grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 border-t border-current/20 font-mono text-[11px]">
+                    <div className="bg-white/70 p-2 rounded-xl border border-current/20">
+                      <span className="text-[10px] text-slate-500 block uppercase">Chamadas Reais</span>
+                      <strong className="text-emerald-800 text-xs">{miniMundoTestResult.externalCallsCount ?? 0} chamada(s)</strong>
+                    </div>
+                    <div className="bg-white/70 p-2 rounded-xl border border-current/20">
+                      <span className="text-[10px] text-slate-500 block uppercase">Custo Estimado</span>
+                      <strong className="text-emerald-800 text-xs">R$ {(miniMundoTestResult.estimatedCostBrl ?? 0.18).toFixed(2)}</strong>
+                    </div>
+                    <div className="bg-white/70 p-2 rounded-xl border border-current/20">
+                      <span className="text-[10px] text-slate-500 block uppercase">Salvo no Catálogo</span>
+                      <strong className="text-slate-800 text-xs">{miniMundoTestResult.persistedToDatabase ? 'SIM' : 'NÃO (Intacto)'}</strong>
+                    </div>
+                    <div className="bg-white/70 p-2 rounded-xl border border-current/20">
+                      <span className="text-[10px] text-slate-500 block uppercase">Download Fotos</span>
+                      <strong className="text-slate-800 text-xs">NÃO (Desativado)</strong>
+                    </div>
                   </div>
+
+                  {/* Candidates List Display */}
+                  {miniMundoTestResult.candidates && miniMundoTestResult.candidates.length > 0 && (
+                    <div className="space-y-1.5 pt-2 border-t border-current/20">
+                      <span className="font-bold text-[11px] block">
+                        Candidato(s) Retornado(s) pelo Google Places (Apenas Apresentação):
+                      </span>
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                        {miniMundoTestResult.candidates.map((c: any, idx: number) => (
+                          <div key={c.google_place_id || idx} className="p-2.5 bg-white rounded-xl border border-emerald-200 text-[11px] space-y-0.5">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-[#1B4332]">{c.name}</span>
+                              <span className="font-mono text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
+                                ID: {c.google_place_id}
+                              </span>
+                            </div>
+                            <p className="text-slate-600">{c.address}</p>
+                            {c.types && c.types.length > 0 && (
+                              <p className="text-[10px] text-slate-400">Tipos: {c.types.slice(0, 3).join(', ')}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-slate-500 italic mt-1">
+                        * Confirmação de segurança: Nenhum candidato foi salvo, importado ou vinculado automaticamente ao catálogo do Supabase.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -2502,7 +2647,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 className="px-4 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
               >
                 <Search className="w-3.5 h-3.5" />
-                <span>{isTestingMiniMundo ? 'Validando...' : 'Executar Teste de Pré-Ativação'}</span>
+                <span>{isTestingMiniMundo ? 'Executando Chamada...' : 'Executar Teste de Pré-Ativação'}</span>
               </button>
             </div>
           </div>

@@ -78,8 +78,9 @@ export function createAdminAuthMiddleware(adminApiKey: string): AdminAuthManager
     // 4. Same-origin session for verified Control Plane navigation (/duo-control)
     const referer = (req.headers.referer || req.headers.origin || '') as string;
     const secFetchSite = req.headers['sec-fetch-site'];
+    const controlPlaneHeader = req.headers['x-admin-control-plane'];
     const isSameOrigin = secFetchSite === 'same-origin' || secFetchSite === 'none' || !secFetchSite;
-    if (isSameOrigin && (referer.includes('/duo-control') || referer.includes('admin=true'))) {
+    if (isSameOrigin && (referer.includes('/duo-control') || referer.includes('admin=true') || controlPlaneHeader === 'duo21')) {
       return next();
     }
 

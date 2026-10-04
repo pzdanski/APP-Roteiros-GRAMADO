@@ -269,9 +269,14 @@ async function runSprint10BTests() {
   console.log('\n--- 11. Mini Mundo Pre-Activation Action Prepared ---');
   {
     const provider = new GooglePlacesServerProvider();
-    const testResult = await provider.testMiniMundoPreActivation();
-    assert.strictEqual(testResult.ready, true, 'Pre-activation infrastructure must be ready');
-    assert.strictEqual(testResult.executedRealCall, false, 'Must NOT execute real call during Sprint 10B');
+    // Test without confirmation -> must refuse
+    const unconfirmed = await provider.testMiniMundoPreActivation({ confirmed: false });
+    assert.strictEqual(unconfirmed.costGuardStatus, 'CONFIRMATION_REQUIRED');
+    assert.strictEqual(unconfirmed.executedRealCall, false);
+
+    // Test with confirmation but flag false -> must block
+    const testResult = await provider.testMiniMundoPreActivation({ confirmed: true });
+    assert.strictEqual(testResult.executedRealCall, false, 'Must NOT execute real call when flag false');
     assert.strictEqual(testResult.estimatedRequests, 1, 'Estimated requests must be 1');
     assert.strictEqual(testResult.fieldMask, GOOGLE_FIELD_MASKS.RESOLUTION_INITIAL, 'Must use surgical FieldMask');
     assert(testResult.costGuardStatus.includes('DISABLED'), 'CostGuard status must reflect DISABLED');

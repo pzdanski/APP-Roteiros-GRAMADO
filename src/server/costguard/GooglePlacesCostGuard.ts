@@ -1,3 +1,5 @@
+import { parseBooleanEnv } from '../envValidator';
+
 export interface GooglePlacesCallRecord {
   id: string;
   endpoint: string;
@@ -92,6 +94,7 @@ export interface GooglePlacesCostMetrics {
 
 export class GooglePlacesCostGuard {
   private config: GooglePlacesCostGuardConfig;
+  private runtimeOverridden: Set<string> = new Set();
   private pricingTable: Record<string, GooglePlacesPricingItem>;
   private calls: GooglePlacesCallRecord[] = [];
   private lastCallAt: string | null = null;
@@ -101,9 +104,9 @@ export class GooglePlacesCostGuard {
 
   constructor(customConfig?: Partial<GooglePlacesCostGuardConfig>) {
     this.config = {
-      enabled: process.env.GOOGLE_PLACES_ENABLED === 'true',
-      importEnabled: process.env.GOOGLE_PLACES_IMPORT_ENABLED === 'true',
-      photosEnabled: process.env.GOOGLE_PLACES_PHOTOS_ENABLED === 'true',
+      enabled: customConfig?.enabled !== undefined ? customConfig.enabled : parseBooleanEnv(process.env.GOOGLE_PLACES_ENABLED),
+      importEnabled: customConfig?.importEnabled !== undefined ? customConfig.importEnabled : parseBooleanEnv(process.env.GOOGLE_PLACES_IMPORT_ENABLED),
+      photosEnabled: customConfig?.photosEnabled !== undefined ? customConfig.photosEnabled : parseBooleanEnv(process.env.GOOGLE_PLACES_PHOTOS_ENABLED),
       dailyRequestLimit: Number(process.env.GOOGLE_PLACES_DAILY_REQUEST_LIMIT || 50),
       monthlyRequestLimit: Number(process.env.GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT || 500),
       dailyBudgetBrl: Number(process.env.GOOGLE_PLACES_DAILY_BUDGET_BRL || 10.00),
@@ -111,16 +114,56 @@ export class GooglePlacesCostGuard {
       dailyEnrichmentLimit: Number(process.env.GOOGLE_PLACES_DAILY_ENRICHMENT_LIMIT || 20),
       ...customConfig
     };
+    if (customConfig) {
+      Object.keys(customConfig).forEach(k => this.runtimeOverridden.add(k));
+    }
     this.pricingTable = { ...OFFICIAL_PLACES_PRICING };
   }
 
+  syncWithEnv(env: Partial<GooglePlacesCostGuardConfig> | Record<string, any>): void {
+    const envAny = env as any;
+    const isEnabled = envAny.enabled !== undefined ? envAny.enabled : envAny.GOOGLE_PLACES_ENABLED;
+    const isImportEnabled = envAny.importEnabled !== undefined ? envAny.importEnabled : envAny.GOOGLE_PLACES_IMPORT_ENABLED;
+    const isPhotosEnabled = envAny.photosEnabled !== undefined ? envAny.photosEnabled : envAny.GOOGLE_PLACES_PHOTOS_ENABLED;
+    const dailyLimit = envAny.dailyRequestLimit !== undefined ? envAny.dailyRequestLimit : envAny.GOOGLE_PLACES_DAILY_REQUEST_LIMIT;
+    const monthlyLimit = envAny.monthlyRequestLimit !== undefined ? envAny.monthlyRequestLimit : envAny.GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT;
+    const dailyBudget = envAny.dailyBudgetBrl !== undefined ? envAny.dailyBudgetBrl : envAny.GOOGLE_PLACES_DAILY_BUDGET_BRL;
+    const monthlyBudget = envAny.monthlyBudgetBrl !== undefined ? envAny.monthlyBudgetBrl : envAny.GOOGLE_PLACES_MONTHLY_BUDGET_BRL;
+
+    if (isEnabled !== undefined && !this.runtimeOverridden.has('enabled')) this.config.enabled = parseBooleanEnv(isEnabled);
+    if (isImportEnabled !== undefined && !this.runtimeOverridden.has('importEnabled')) this.config.importEnabled = parseBooleanEnv(isImportEnabled);
+    if (isPhotosEnabled !== undefined && !this.runtimeOverridden.has('photosEnabled')) this.config.photosEnabled = parseBooleanEnv(isPhotosEnabled);
+    if (dailyLimit !== undefined && !this.runtimeOverridden.has('dailyRequestLimit')) this.config.dailyRequestLimit = Number(dailyLimit);
+    if (monthlyLimit !== undefined && !this.runtimeOverridden.has('monthlyRequestLimit')) this.config.monthlyRequestLimit = Number(monthlyLimit);
+    if (dailyBudget !== undefined && !this.runtimeOverridden.has('dailyBudgetBrl')) this.config.dailyBudgetBrl = Number(dailyBudget);
+    if (monthlyBudget !== undefined && !this.runtimeOverridden.has('monthlyBudgetBrl')) this.config.monthlyBudgetBrl = Number(monthlyBudget);
+  }
+
   getConfig(): GooglePlacesCostGuardConfig {
-    return { ...this.config };
+    const isEnabled = this.runtimeOverridden.has('enabled')
+      ? this.config.enabled
+      : (process.env.GOOGLE_PLACES_ENABLED !== undefined ? parseBooleanEnv(process.env.GOOGLE_PLACES_ENABLED) : this.config.enabled);
+
+    const isImportEnabled = this.runtimeOverridden.has('importEnabled')
+      ? this.config.importEnabled
+      : (process.env.GOOGLE_PLACES_IMPORT_ENABLED !== undefined ? parseBooleanEnv(process.env.GOOGLE_PLACES_IMPORT_ENABLED) : this.config.importEnabled);
+
+    const isPhotosEnabled = this.runtimeOverridden.has('photosEnabled')
+      ? this.config.photosEnabled
+      : (process.env.GOOGLE_PLACES_PHOTOS_ENABLED !== undefined ? parseBooleanEnv(process.env.GOOGLE_PLACES_PHOTOS_ENABLED) : this.config.photosEnabled);
+
+    return {
+      ...this.config,
+      enabled: isEnabled,
+      importEnabled: isImportEnabled,
+      photosEnabled: isPhotosEnabled
+    };
   }
 
   updateConfig(updates: Partial<GooglePlacesCostGuardConfig>): GooglePlacesCostGuardConfig {
     this.config = { ...this.config, ...updates };
-    return { ...this.config };
+    Object.keys(updates).forEach(k => this.runtimeOverridden.add(k));
+    return this.getConfig();
   }
 
   getPricingTable(): Record<string, GooglePlacesPricingItem> {
@@ -192,7 +235,8 @@ export class GooglePlacesCostGuard {
     }
 
     // 2. Main switch: GOOGLE_PLACES_ENABLED (Req 3)
-    if (!this.config.enabled) {
+    const currentConfig = this.getConfig();
+    if (!currentConfig.enabled) {
       return {
         allowed: false,
         reason: 'GOOGLE_PLACES_DISABLED: O consumo externo da Google Places API está desativado (GOOGLE_PLACES_ENABLED=false).'
@@ -200,7 +244,7 @@ export class GooglePlacesCostGuard {
     }
 
     // 3. Sub-feature switch: Automatic/Unattended Import (Req 3)
-    if (options?.isImport && !this.config.importEnabled) {
+    if (options?.isImport && !currentConfig.importEnabled) {
       return {
         allowed: false,
         reason: 'GOOGLE_PLACES_IMPORT_DISABLED: A importação de locais está desativada (GOOGLE_PLACES_IMPORT_ENABLED=false).'
@@ -208,7 +252,7 @@ export class GooglePlacesCostGuard {
     }
 
     // 4. Sub-feature switch: Photos (Req 3 & Req 12)
-    if ((options?.isPhoto || operation === 'getPhoto' || fieldMask?.includes('photos')) && !this.config.photosEnabled) {
+    if ((options?.isPhoto || operation === 'getPhoto' || fieldMask?.includes('photos')) && !currentConfig.photosEnabled) {
       return {
         allowed: false,
         reason: 'GOOGLE_PLACES_PHOTOS_DISABLED: O download de fotos do Google Places está desativado (GOOGLE_PLACES_PHOTOS_ENABLED=false).'
@@ -358,13 +402,14 @@ export class GooglePlacesCostGuard {
       enrichedPlacesToday >= this.config.dailyEnrichmentLimit
     );
 
+    const currentConfig = this.getConfig();
     let status: GooglePlacesCostMetrics['status'] = 'DISABLED';
     let statusDisplay: GooglePlacesCostMetrics['statusDisplay'] = 'DESATIVADO';
 
     if (!apiKeyAvailable) {
       status = 'CONFIGURATION_REQUIRED';
       statusDisplay = 'AGUARDANDO CONFIGURAÇÃO';
-    } else if (!this.config.enabled) {
+    } else if (!currentConfig.enabled) {
       status = 'DISABLED';
       statusDisplay = 'DESATIVADO';
     } else if (isLimitExceeded) {
@@ -383,9 +428,9 @@ export class GooglePlacesCostGuard {
       statusDisplay,
       provider: 'GooglePlacesNew',
       apiKeyConfigured: apiKeyAvailable,
-      enabled: this.config.enabled,
-      importEnabled: this.config.importEnabled,
-      photosEnabled: this.config.photosEnabled,
+      enabled: currentConfig.enabled,
+      importEnabled: currentConfig.importEnabled,
+      photosEnabled: currentConfig.photosEnabled,
       callsToday: todayCalls.length,
       callsMonth: monthCalls.length,
       cacheHits: cacheHitsTotal,
@@ -393,13 +438,13 @@ export class GooglePlacesCostGuard {
       callsAvoidedByCache: cacheHitsTotal,
       estimatedCostTodayBrl: Math.round(estimatedCostTodayBrl * 100) / 100,
       estimatedCostMonthBrl: Math.round(estimatedCostMonthBrl * 100) / 100,
-      remainingDailyBudgetBrl: Math.max(0, Math.round((this.config.dailyBudgetBrl - estimatedCostTodayBrl) * 100) / 100),
-      remainingMonthlyBudgetBrl: Math.max(0, Math.round((this.config.monthlyBudgetBrl - estimatedCostMonthBrl) * 100) / 100),
-      dailyLimit: this.config.dailyRequestLimit,
-      monthlyLimit: this.config.monthlyRequestLimit,
-      dailyBudgetBrl: this.config.dailyBudgetBrl,
-      monthlyBudgetBrl: this.config.monthlyBudgetBrl,
-      dailyEnrichmentLimit: this.config.dailyEnrichmentLimit,
+      remainingDailyBudgetBrl: Math.max(0, Math.round((currentConfig.dailyBudgetBrl - estimatedCostTodayBrl) * 100) / 100),
+      remainingMonthlyBudgetBrl: Math.max(0, Math.round((currentConfig.monthlyBudgetBrl - estimatedCostMonthBrl) * 100) / 100),
+      dailyLimit: currentConfig.dailyRequestLimit,
+      monthlyLimit: currentConfig.monthlyRequestLimit,
+      dailyBudgetBrl: currentConfig.dailyBudgetBrl,
+      monthlyBudgetBrl: currentConfig.monthlyBudgetBrl,
+      dailyEnrichmentLimit: currentConfig.dailyEnrichmentLimit,
       enrichedPlacesToday,
       lastCallAt: this.lastCallAt,
       lastSyncAt: this.lastSyncAt,

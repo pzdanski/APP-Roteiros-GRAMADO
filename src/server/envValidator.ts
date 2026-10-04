@@ -26,6 +26,13 @@ export interface ValidatedEnv {
   GOOGLE_PLACES_MONTHLY_BUDGET_BRL: number;
 }
 
+export function parseBooleanEnv(val: unknown): boolean {
+  if (typeof val === 'boolean') return val;
+  if (!val || typeof val !== 'string') return false;
+  const cleaned = val.replace(/^["']|["']$/g, '').trim().toLowerCase();
+  return cleaned === 'true' || cleaned === '1';
+}
+
 export function validateServerEnv(): ValidatedEnv {
   // If running in development and /app/.dev.env.json exists, populate any missing keys
   try {
@@ -77,7 +84,7 @@ export function validateServerEnv(): ValidatedEnv {
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '',
     ADMIN_API_KEY: process.env.ADMIN_API_KEY || 'duo21-dev-admin-secret-key-change-in-prod',
     GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
-    GOOGLE_MAPS_API_KEY: process.env.GOOGLE_MAPS_API_KEY || '',
+    GOOGLE_MAPS_API_KEY: (process.env.GOOGLE_MAPS_API_KEY || '').replace(/^["']|["']$/g, '').trim(),
     ASAAS_API_KEY: process.env.ASAAS_API_KEY || '',
     ASAAS_ENV: (process.env.ASAAS_ENV === 'production' ? 'production' : 'sandbox') as 'sandbox' | 'production',
     ASAAS_WEBHOOK_TOKEN: process.env.ASAAS_WEBHOOK_TOKEN || '',
@@ -85,9 +92,9 @@ export function validateServerEnv(): ValidatedEnv {
     APP_PUBLIC_URL: process.env.APP_PUBLIC_URL || 'https://roteiro.duo21.com.br',
     PUBLIC_APP_ORIGIN: process.env.PUBLIC_APP_ORIGIN || 'https://roteiro.duo21.com.br',
     MAX_GENERATION_API_COST_BRL: isNaN(maxCost) ? 1.00 : maxCost,
-    GOOGLE_PLACES_ENABLED: process.env.GOOGLE_PLACES_ENABLED === 'true',
-    GOOGLE_PLACES_IMPORT_ENABLED: process.env.GOOGLE_PLACES_IMPORT_ENABLED === 'true',
-    GOOGLE_PLACES_PHOTOS_ENABLED: process.env.GOOGLE_PLACES_PHOTOS_ENABLED === 'true',
+    GOOGLE_PLACES_ENABLED: parseBooleanEnv(process.env.GOOGLE_PLACES_ENABLED),
+    GOOGLE_PLACES_IMPORT_ENABLED: parseBooleanEnv(process.env.GOOGLE_PLACES_IMPORT_ENABLED),
+    GOOGLE_PLACES_PHOTOS_ENABLED: parseBooleanEnv(process.env.GOOGLE_PLACES_PHOTOS_ENABLED),
     GOOGLE_PLACES_DAILY_REQUEST_LIMIT: Number(process.env.GOOGLE_PLACES_DAILY_REQUEST_LIMIT || 50),
     GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT: Number(process.env.GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT || 500),
     GOOGLE_PLACES_DAILY_BUDGET_BRL: Number(process.env.GOOGLE_PLACES_DAILY_BUDGET_BRL || 10.00),

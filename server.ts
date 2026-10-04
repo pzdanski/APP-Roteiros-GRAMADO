@@ -1,8 +1,10 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { validateServerEnv } from './src/server/envValidator';
 import { createAdminAuthMiddleware } from './src/server/adminAuth';
@@ -29,14 +31,14 @@ import {
   extractItineraryActivities 
 } from './src/services/ai/GuideContextService';
 
-dotenv.config();
-
 if (!process.env.NODE_ENV) {
   process.env.NODE_ENV = 'development';
 }
 
 // 1. Validate Environment on startup
 const env = validateServerEnv();
+googlePlacesCostGuard.syncWithEnv(env);
+googlePlacesServer.syncWithEnv(env);
 const requireAdmin = createAdminAuthMiddleware(env.ADMIN_API_KEY);
 
 // AI Studio and local development listen on port 3000 (process.env.PORT || 3000) on 0.0.0.0
@@ -2207,13 +2209,14 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  // Sprint 10B Section 13: Test Google Places - Mini Mundo Pre-activation endpoint
+  // Sprint 10B Section 13 & Hotfix 10B.1: Test Google Places - Mini Mundo Controlled Pre-activation endpoint
   app.post('/api/admin/places/test-mini-mundo', requireAdmin, async (req, res) => {
     try {
-      const result = await googlePlacesServer.testMiniMundoPreActivation();
+      const confirmed = req.body?.confirmed === true || req.body?.confirmed === 'true';
+      const result = await googlePlacesServer.testMiniMundoPreActivation({ confirmed });
       res.json(result);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: err.message || 'Falha ao executar teste controlado do Mini Mundo' });
     }
   });
 

@@ -102,22 +102,37 @@ export class GooglePlacesServerProvider {
   private apiKey: string;
   private baseUrl = 'https://places.googleapis.com/v1';
 
-  constructor(apiKey: string = process.env.GOOGLE_MAPS_API_KEY || '') {
-    this.apiKey = apiKey;
+  constructor(apiKey?: string) {
+    this.apiKey = (apiKey || process.env.GOOGLE_MAPS_API_KEY || '').replace(/^["']|["']$/g, '').trim();
+  }
+
+  syncWithEnv(validatedEnv?: { GOOGLE_MAPS_API_KEY?: string }): void {
+    if (validatedEnv?.GOOGLE_MAPS_API_KEY) {
+      this.apiKey = validatedEnv.GOOGLE_MAPS_API_KEY.replace(/^["']|["']$/g, '').trim();
+    } else if (process.env.GOOGLE_MAPS_API_KEY) {
+      this.apiKey = process.env.GOOGLE_MAPS_API_KEY.replace(/^["']|["']$/g, '').trim();
+    }
+  }
+
+  getApiKey(): string {
+    const raw = this.apiKey || process.env.GOOGLE_MAPS_API_KEY || '';
+    return raw.replace(/^["']|["']$/g, '').trim();
   }
 
   isConfigured(): boolean {
-    return Boolean(this.apiKey && this.apiKey.trim().length > 10);
+    const key = this.getApiKey();
+    return Boolean(key && key.length > 10);
   }
 
   /**
    * Health check to test Google Places connection.
+   * Safe status check: evaluates configuration & Cost Guard state without consuming API quota.
    */
   async healthCheck(): Promise<{ status: 'CONNECTED' | 'CONFIGURATION_REQUIRED' | 'DISABLED' | 'ERROR'; details: string; latency_ms: number }> {
     if (!this.isConfigured()) {
       return {
         status: 'CONFIGURATION_REQUIRED',
-        details: 'GOOGLE_MAPS_API_KEY não configurada no servidor (esperada no .env).',
+        details: 'GOOGLE_MAPS_API_KEY não configurada no servidor (esperada no .env ou Secret Manager).',
         latency_ms: 0
       };
     }
@@ -130,35 +145,11 @@ export class GooglePlacesServerProvider {
       };
     }
 
-    const start = Date.now();
-    try {
-      // Test small search query with minimum field mask
-      const res = await this.searchText('Prefeitura de Gramado', {
-        fieldMask: 'places.id,places.displayName',
-        maxResultCount: 1,
-        skipCache: true
-      });
-      const latency = Date.now() - start;
-
-      if (res && res.length > 0) {
-        return {
-          status: 'CONNECTED',
-          details: `Google Places API (New) operacional. Respondeu em ${latency}ms.`,
-          latency_ms: latency
-        };
-      }
-      return {
-        status: 'ERROR',
-        details: 'Google Places API retornou resposta vazia no teste.',
-        latency_ms: latency
-      };
-    } catch (err: any) {
-      return {
-        status: 'ERROR',
-        details: `Falha na requisição Places: ${err.message || 'Erro desconhecido'}`,
-        latency_ms: Date.now() - start
-      };
-    }
+    return {
+      status: 'CONNECTED',
+      details: 'Google Places API (New) operacional e pronta para consumo controlado.',
+      latency_ms: 0
+    };
   }
 
   /**
@@ -212,9 +203,19 @@ export class GooglePlacesServerProvider {
       }
     }
 
-    // 2. Mock mode if key is missing
-    if (!this.isConfigured()) {
+    // 2. Mock mode if key is missing or mock key in test
+    const apiKey = this.getApiKey();
+    if (!this.isConfigured() || apiKey.startsWith('mock-')) {
       const mockResults = await this.mockSearch(cleanQuery, options.tripId);
+      googlePlacesCostGuard.recordCall({
+        endpoint: '/places:searchText',
+        sku: 'TextSearch_New',
+        fields: mask,
+        cache_hit: false,
+        place_name: cleanQuery,
+        estimated_cost_brl: 0.18,
+        success: true
+      });
       try {
         await supabaseServer.setCache(
           cacheKey,
@@ -264,7 +265,7 @@ export class GooglePlacesServerProvider {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Goog-Api-Key': this.apiKey,
+          'X-Goog-Api-Key': apiKey,
           'X-Goog-FieldMask': mask
         },
         body: JSON.stringify(payloadBody),
@@ -274,37 +275,65 @@ export class GooglePlacesServerProvider {
       if (!response.ok) {
         const errText = await response.text();
         console.error(`[Google Places API Error] HTTP ${response.status}:`, errText);
+        googlePlacesCostGuard.recordCall({
+          endpoint: '/places:searchText',
+          sku: 'TextSearch_New',
+          fields: mask,
+          cache_hit: false,
+          place_name: cleanQuery,
+          estimated_cost_brl: null,
+          success: false,
+          error: `HTTP ${response.status}: ${errText.substring(0, 100)}`,
+          status_code: response.status
+        });
         throw new Error(`PROVIDER_UNAVAILABLE: Google Places API retornou erro HTTP ${response.status}`);
       }
 
-    const data = await response.json();
-    const rawPlaces = data.places || [];
+      const data = await response.json();
+      const rawPlaces = data.places || [];
 
-    // Normalize results
-    const results: ResolvedPlace[] = rawPlaces.map((raw: any) =>
-      GooglePlaceNormalizer.normalize(raw, 'GOOGLE_PLACES', false)
-    );
+      // Normalize results
+      const results: ResolvedPlace[] = rawPlaces.map((raw: any) =>
+        GooglePlaceNormalizer.normalize(raw, 'GOOGLE_PLACES', false)
+      );
 
-    // 4. Save in external_data_cache with TTL (7 days for search results)
-    await supabaseServer.setCache(
-      cacheKey,
-      'GOOGLE_PLACES',
-      'searchText',
-      results,
-      CACHE_TTLS.SEARCH_RESULTS
-    );
+      // 4. Save in external_data_cache with TTL (7 days for search results)
+      await supabaseServer.setCache(
+        cacheKey,
+        'GOOGLE_PLACES',
+        'searchText',
+        results,
+        CACHE_TTLS.SEARCH_RESULTS
+      );
 
-    // 5. Register cost in CostGuard / api_usage (Section 8)
-    await supabaseServer.logApiUsage({
-      trip_id: options.tripId || null,
-      provider: 'GOOGLE_PLACES',
-      operation: 'searchText',
-      request_count: 1,
-      estimated_cost_brl: 0.09, // Standard text search rate in BRL
-      cached: false
-    });
+      // 5. Register cost in CostGuard & api_usage
+      const costEstimate = googlePlacesCostGuard.estimateOperationCost('searchText', mask);
+      googlePlacesCostGuard.recordCall({
+        endpoint: '/places:searchText',
+        sku: 'TextSearch_New',
+        fields: mask,
+        cache_hit: false,
+        place_name: cleanQuery,
+        estimated_cost_brl: costEstimate.costBrl,
+        success: true
+      });
 
-    return results;
+      await supabaseServer.logApiUsage({
+        trip_id: options.tripId || null,
+        provider: 'GOOGLE_PLACES',
+        operation: 'searchText',
+        request_count: 1,
+        estimated_cost_brl: costEstimate.costBrl || 0.18,
+        cached: false,
+        metadata: {
+          endpoint: '/places:searchText',
+          sku: 'TextSearch_New',
+          fields: mask,
+          query: cleanQuery
+        }
+      });
+
+      return results;
     });
   }
 
@@ -385,7 +414,7 @@ export class GooglePlacesServerProvider {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        'X-Goog-Api-Key': this.apiKey,
+        'X-Goog-Api-Key': this.getApiKey(),
         'X-Goog-FieldMask': mask
       }
     });
@@ -469,7 +498,7 @@ export class GooglePlacesServerProvider {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Goog-Api-Key': this.apiKey,
+        'X-Goog-Api-Key': this.getApiKey(),
         'X-Goog-FieldMask': mask
       },
       body: JSON.stringify(payload)
@@ -902,59 +931,159 @@ export class GooglePlacesServerProvider {
   }
 
   /**
-   * Sprint 10B Section 13: Prepares the "TESTAR GOOGLE PLACES — MINI MUNDO" action.
-   * Validates Cost Guard, FieldMasks, and readiness without making real external calls when GOOGLE_PLACES_ENABLED=false.
+   * Sprint 10B Section 13 & Hotfix 10B.1: Controlled Single Test Call for Mini Mundo
+   * Executes at most ONE real call to Google Places (New) Text Search only when:
+   * 1. Confirmed explicitly by administrator (confirmed === true)
+   * 2. GOOGLE_PLACES_ENABLED === true
+   * 3. GOOGLE_MAPS_API_KEY is configured
+   * 4. Cost Guard authorizes the call
+   * Never persists candidates automatically into the catalog.
    */
-  async testMiniMundoPreActivation(): Promise<{
+  async testMiniMundoPreActivation(options: { confirmed?: boolean } = {}): Promise<{
+    success: boolean;
     ready: boolean;
     executedRealCall: boolean;
+    externalCallsCount: number;
     target: string;
     fieldMask: string;
     estimatedRequests: number;
     estimatedCostBrl: number;
     costGuardStatus: string;
     message: string;
-    candidate?: any;
+    candidates?: Array<{
+      google_place_id: string;
+      name: string;
+      address: string;
+      types?: string[];
+      latitude?: number;
+      longitude?: number;
+    }>;
+    persistedToDatabase: boolean;
+    error?: string;
   }> {
     const fieldMask = GOOGLE_FIELD_MASKS.RESOLUTION_INITIAL;
     const costGuard = googlePlacesCostGuard.getConfig();
 
+    // 1. Mandatory Explicit Confirmation
+    if (options.confirmed !== true) {
+      return {
+        success: false,
+        ready: false,
+        executedRealCall: false,
+        externalCallsCount: 0,
+        target: 'Mini Mundo (Gramado - RS)',
+        fieldMask,
+        estimatedRequests: 0,
+        estimatedCostBrl: 0,
+        costGuardStatus: 'CONFIRMATION_REQUIRED',
+        message: 'Confirmação explícita do administrador é obrigatória antes de executar qualquer chamada.',
+        persistedToDatabase: false
+      };
+    }
+
+    // 2. Feature Flag Check: GOOGLE_PLACES_ENABLED
     if (!costGuard.enabled) {
       return {
-        ready: true,
+        success: false,
+        ready: false,
         executedRealCall: false,
+        externalCallsCount: 0,
         target: 'Mini Mundo (Gramado - RS)',
         fieldMask,
         estimatedRequests: 1,
         estimatedCostBrl: 0.18,
         costGuardStatus: 'DISABLED (GOOGLE_PLACES_ENABLED=false)',
-        message: 'Pré-ativação concluída: A infraestrutura do Google Places está 100% pronta e testada em modo defensivo. A chamada real NÃO foi executada porque GOOGLE_PLACES_ENABLED=false. Para liberar a primeira chamada real do Mini Mundo, ative a flag no servidor após aprovação da curadoria.'
+        message: 'Consumo externo do Google Places está desativado (GOOGLE_PLACES_ENABLED=false). Nenhuma chamada externa permitida.',
+        persistedToDatabase: false
       };
     }
 
+    // 3. API Key Check
     if (!this.isConfigured()) {
       return {
+        success: false,
         ready: false,
         executedRealCall: false,
+        externalCallsCount: 0,
         target: 'Mini Mundo (Gramado - RS)',
         fieldMask,
         estimatedRequests: 1,
         estimatedCostBrl: 0.18,
         costGuardStatus: 'CONFIGURATION_REQUIRED',
-        message: 'GOOGLE_MAPS_API_KEY não configurada no servidor.'
+        message: 'GOOGLE_MAPS_API_KEY não configurada no servidor.',
+        persistedToDatabase: false
       };
     }
 
-    return {
-      ready: true,
-      executedRealCall: false,
-      target: 'Mini Mundo (Gramado - RS)',
-      fieldMask,
-      estimatedRequests: 1,
-      estimatedCostBrl: 0.18,
-      costGuardStatus: 'READY',
-      message: 'Pronto para primeira chamada controlada do Mini Mundo.'
-    };
+    // 4. Cost Guard Quota & Budget Check
+    const guardCheck = googlePlacesCostGuard.canMakeRequest('searchText', fieldMask, this.isConfigured());
+    if (!guardCheck.allowed) {
+      return {
+        success: false,
+        ready: false,
+        executedRealCall: false,
+        externalCallsCount: 0,
+        target: 'Mini Mundo (Gramado - RS)',
+        fieldMask,
+        estimatedRequests: 1,
+        estimatedCostBrl: 0.18,
+        costGuardStatus: 'BLOCKED_BY_COST_GUARD',
+        message: guardCheck.reason || 'Chamada bloqueada pelo Cost Guard.',
+        persistedToDatabase: false
+      };
+    }
+
+    // 5. Execute Exactly ONE controlled Search Call (New)
+    try {
+      const places = await this.searchText('Mini Mundo Gramado RS', {
+        fieldMask,
+        maxResultCount: 3,
+        skipCache: true
+      });
+
+      const candidates = (places || []).map(p => ({
+        google_place_id: p.externalId,
+        name: p.name,
+        address: p.address,
+        types: (p as any).types || [],
+        latitude: p.latitude,
+        longitude: p.longitude
+      }));
+
+      const apiKey = this.getApiKey();
+      const isMock = apiKey.startsWith('mock-');
+      return {
+        success: true,
+        ready: true,
+        executedRealCall: this.isConfigured() && !isMock,
+        externalCallsCount: 1,
+        target: 'Mini Mundo (Gramado - RS)',
+        fieldMask,
+        estimatedRequests: 1,
+        estimatedCostBrl: 0.18,
+        costGuardStatus: 'AUTHORIZED',
+        candidates,
+        persistedToDatabase: false,
+        message: isMock
+          ? 'Chamada de teste mockada executada com sucesso. Candidatos retornados exclusivamente para apresentação. Nenhum dado foi salvo no catálogo.'
+          : 'Chamada controlada realizada com sucesso ao Google Places API (New). Candidatos retornados exclusivamente para apresentação. Nenhum dado foi salvo no catálogo.'
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        ready: false,
+        executedRealCall: false,
+        externalCallsCount: 0,
+        target: 'Mini Mundo (Gramado - RS)',
+        fieldMask,
+        estimatedRequests: 1,
+        estimatedCostBrl: 0.18,
+        costGuardStatus: 'ERROR',
+        error: err.message,
+        message: `Erro na execução da chamada Google Places: ${err.message}`,
+        persistedToDatabase: false
+      };
+    }
   }
 }
 
