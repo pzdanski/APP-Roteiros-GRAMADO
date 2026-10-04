@@ -37,7 +37,10 @@ import {
   Filter,
   AlertCircle,
   Eye,
-  Star
+  Star,
+  Lock,
+  Shield,
+  Download
 } from 'lucide-react';
 import { Place, SerraEvent, UserReport, AdminMetrics } from '../types';
 import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
@@ -124,6 +127,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [catalogMetrics, setCatalogMetrics] = useState<any>(null);
   const [costGuardMetrics, setCostGuardMetrics] = useState<any>(null);
   const [costGuardUpdating, setCostGuardUpdating] = useState(false);
+  const [costGuardAuditRecords, setCostGuardAuditRecords] = useState<any[]>([]);
+  const [showMiniMundoModal, setShowMiniMundoModal] = useState(false);
+  const [miniMundoTestResult, setMiniMundoTestResult] = useState<any>(null);
+  const [isTestingMiniMundo, setIsTestingMiniMundo] = useState(false);
+  const [miniMundoConfirmed, setMiniMundoConfirmed] = useState(false);
+  const [showAuditHistory, setShowAuditHistory] = useState(false);
   const [isLoadingPlaces, setIsLoadingPlaces] = useState(false);
 
   // Live operational data for DUO21 CMS modules (Sprint 8C)
@@ -263,13 +272,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           }
         }
       }
-      const cgRes = await fetch('/api/admin/places/costguard', {
-        headers: getAdminHeaders(),
-        credentials: 'include'
-      });
+      const [cgRes, auditRes] = await Promise.all([
+        fetch('/api/admin/places/costguard', {
+          headers: getAdminHeaders(),
+          credentials: 'include'
+        }),
+        fetch('/api/admin/places/costguard/audit?limit=20', {
+          headers: getAdminHeaders(),
+          credentials: 'include'
+        })
+      ]);
+
       if (cgRes.ok) {
         const cgData = await cgRes.json();
         setCostGuardMetrics(cgData);
+      }
+      if (auditRes.ok) {
+        const auditData = await auditRes.json();
+        if (Array.isArray(auditData)) {
+          setCostGuardAuditRecords(auditData);
+        }
       }
     } catch (err) {
       console.warn('Error fetching places:', err);
@@ -360,10 +382,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     try {
       const res = await fetch('/api/admin/places/costguard', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-key': adminApiKey
-        },
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
         body: JSON.stringify({ enabled: !costGuardMetrics.enabled })
       });
       if (res.ok) {
@@ -374,6 +394,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       console.warn('CostGuard toggle error:', err);
     } finally {
       setCostGuardUpdating(false);
+    }
+  };
+
+  const handleRunMiniMundoPreActivation = async () => {
+    setIsTestingMiniMundo(true);
+    setMiniMundoTestResult(null);
+    try {
+      const res = await fetch('/api/admin/places/test-mini-mundo', {
+        method: 'POST',
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include'
+      });
+      const data = await res.json();
+      setMiniMundoTestResult(data);
+      // Refresh metrics after test action
+      const cgRes = await fetch('/api/admin/places/costguard', {
+        headers: getAdminHeaders(),
+        credentials: 'include'
+      });
+      if (cgRes.ok) {
+        setCostGuardMetrics(await cgRes.json());
+      }
+    } catch (err: any) {
+      setMiniMundoTestResult({ ready: false, message: `Erro ao testar Mini Mundo: ${err.message}` });
+    } finally {
+      setIsTestingMiniMundo(false);
     }
   };
 
@@ -757,6 +803,265 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                 );
               })}
+            </div>
+
+            {/* SPRINT 10B: PAINEL DE CUSTOS & COST GUARD — GOOGLE PLACES API (NEW) */}
+            <div className="bg-white border border-[#E7DFCE] p-5 rounded-3xl shadow-xs space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-[#F1EBE0]">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-800 bg-emerald-100/70 px-2 py-0.5 rounded-full inline-block">
+                      Sprint 10B • Cost Guard
+                    </span>
+                    <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
+                      costGuardMetrics?.statusDisplay === 'ATIVO' ? 'bg-emerald-100 text-emerald-800' :
+                      costGuardMetrics?.statusDisplay === 'BLOQUEADO PELO COST GUARD' ? 'bg-rose-100 text-rose-800' :
+                      costGuardMetrics?.statusDisplay === 'AGUARDANDO CONFIGURAÇÃO' ? 'bg-amber-100 text-amber-800' :
+                      'bg-slate-200 text-slate-700'
+                    }`}>
+                      STATUS: {costGuardMetrics?.statusDisplay || 'DESATIVADO'}
+                    </span>
+                  </div>
+                  <h3 className="text-base font-extrabold text-[#1B4332] mt-1">
+                    Painel de Custos & Governança — Google Places API (New)
+                  </h3>
+                  <p className="text-xs text-[#64748B]">
+                    Google Places é base de enriquecimento do catálogo Supabase. Turistas nunca consultam o Google diretamente.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleToggleCostGuard}
+                    disabled={costGuardUpdating}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer ${
+                      costGuardMetrics?.enabled
+                        ? 'bg-rose-100 text-rose-800 hover:bg-rose-200'
+                        : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                    }`}
+                  >
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>{costGuardUpdating ? 'Atualizando...' : costGuardMetrics?.enabled ? 'Desativar Google Places' : 'Ativar Google Places'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Status and Keys Row (Requirement 10 & 14) */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200">
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Chave Servidor</span>
+                  <span className="text-xs font-extrabold text-[#1E293B] flex items-center gap-1 mt-0.5">
+                    {costGuardMetrics?.apiKeyConfigured ? (
+                      <span className="text-emerald-700 font-bold">Configurada: SIM</span>
+                    ) : (
+                      <span className="text-amber-700 font-bold">Configurada: NÃO</span>
+                    )}
+                  </span>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">Nunca exposta no frontend</span>
+                </div>
+
+                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200">
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Flag Ativação</span>
+                  <span className="text-xs font-extrabold text-[#1E293B] block mt-0.5">
+                    {costGuardMetrics?.enabled ? (
+                      <span className="text-emerald-700">Ativada: SIM</span>
+                    ) : (
+                      <span className="text-slate-600">Ativada: NÃO (Padrão)</span>
+                    )}
+                  </span>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">GOOGLE_PLACES_ENABLED</span>
+                </div>
+
+                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200">
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Fotos Google</span>
+                  <span className="text-xs font-extrabold text-slate-700 block mt-0.5">
+                    {costGuardMetrics?.photosEnabled ? 'Ativadas' : 'DESATIVADAS (Padrão)'}
+                  </span>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">DUO21/Manual é prioridade</span>
+                </div>
+
+                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200">
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Importação Automática</span>
+                  <span className="text-xs font-extrabold text-slate-700 block mt-0.5">
+                    {costGuardMetrics?.importEnabled ? 'Ativada' : 'DESATIVADA (Padrão)'}
+                  </span>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">Requer aprovação manual</span>
+                </div>
+              </div>
+
+              {/* Usage & Cost Metrics Grid (Requirement 10) */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Chamadas Hoje</span>
+                  <span className="text-base font-black text-[#1E293B] mt-0.5 block">
+                    {costGuardMetrics?.callsToday ?? 0} <span className="text-[10px] text-[#64748B] font-normal">/ {costGuardMetrics?.dailyLimit ?? 50} máx</span>
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Chamadas no Mês</span>
+                  <span className="text-base font-black text-[#1E293B] mt-0.5 block">
+                    {costGuardMetrics?.callsMonth ?? 0} <span className="text-[10px] text-[#64748B] font-normal">/ {costGuardMetrics?.monthlyLimit ?? 500} máx</span>
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Custo Estimado Hoje</span>
+                  <span className="text-base font-black text-[#1B4332] mt-0.5 block">
+                    {costGuardMetrics?.estimatedCostTodayBrl !== null && costGuardMetrics?.estimatedCostTodayBrl !== undefined
+                      ? `R$ ${costGuardMetrics.estimatedCostTodayBrl.toFixed(2)}`
+                      : 'Custo não configurado'}
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Custo Estimado Mês</span>
+                  <span className="text-base font-black text-[#1B4332] mt-0.5 block">
+                    {costGuardMetrics?.estimatedCostMonthBrl !== null && costGuardMetrics?.estimatedCostMonthBrl !== undefined
+                      ? `R$ ${costGuardMetrics.estimatedCostMonthBrl.toFixed(2)}`
+                      : 'Custo não configurado'}
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Budget Restante Hoje</span>
+                  <span className="text-base font-black text-emerald-700 mt-0.5 block">
+                    R$ {costGuardMetrics?.remainingDailyBudgetBrl?.toFixed(2) ?? '10.00'}
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Budget Restante Mês</span>
+                  <span className="text-base font-black text-emerald-700 mt-0.5 block">
+                    R$ {costGuardMetrics?.remainingMonthlyBudgetBrl?.toFixed(2) ?? '100.00'}
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Cache Hits</span>
+                  <span className="text-base font-black text-blue-700 mt-0.5 block">
+                    {costGuardMetrics?.cacheHits ?? 0} <span className="text-[10px] text-[#64748B] font-normal">({costGuardMetrics?.cacheHitRate ?? '0%'})</span>
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Chamadas Evitadas</span>
+                  <span className="text-base font-black text-emerald-600 mt-0.5 block">
+                    {costGuardMetrics?.callsAvoidedByCache ?? 0}
+                  </span>
+                </div>
+              </div>
+
+              {/* Operational Audit Status */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-500 font-bold block">Última Chamada</span>
+                  <span className="font-mono text-slate-800">
+                    {costGuardMetrics?.lastCallAt ? new Date(costGuardMetrics.lastCallAt).toLocaleString('pt-BR') : 'Nenhuma chamada realizada'}
+                  </span>
+                </div>
+                <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-500 font-bold block">Último Local Consultado</span>
+                  <span className="font-semibold text-slate-800 truncate block">
+                    {costGuardMetrics?.lastPlaceConsulted || 'Nenhum local consultado'}
+                  </span>
+                </div>
+                <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                  <span className="text-[10px] text-slate-500 font-bold block">Último Erro</span>
+                  <span className="text-slate-600 truncate block">
+                    {costGuardMetrics?.lastErrorSanitized || 'Nenhum erro registrado'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Requirement 11: Pricing Table & Credit Audit */}
+              <div className="pt-2 border-t border-[#F1EBE0] space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-[#1E293B]">
+                    Tabela de SKUs e Custos Estimados (Google Places New)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowAuditHistory(prev => !prev)}
+                    className="text-xs text-[#1B4332] font-bold hover:underline cursor-pointer"
+                  >
+                    {showAuditHistory ? 'Ocultar Auditoria' : 'Ver Auditoria de Créditos (api_usage)'}
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
+                  {costGuardMetrics?.pricingTable && Object.values(costGuardMetrics.pricingTable).map((p: any) => (
+                    <div key={p.sku} className="p-2.5 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl space-y-1">
+                      <span className="text-[11px] font-bold text-[#1B4332] block truncate">{p.name}</span>
+                      <span className="text-xs font-black text-emerald-800 block">
+                        {p.costBrl !== null ? `R$ ${p.costBrl.toFixed(2)}` : 'Custo não configurado'}
+                      </span>
+                      <span className="text-[10px] text-[#64748B] block leading-tight">{p.description}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Audit Records Table */}
+                {showAuditHistory && (
+                  <div className="space-y-2 mt-2 pt-2 border-t border-[#E7DFCE]">
+                    <span className="text-xs font-bold text-[#1E293B] block">
+                      Registros de Auditoria de Créditos ({costGuardAuditRecords.length}):
+                    </span>
+                    {costGuardAuditRecords.length > 0 ? (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                        {costGuardAuditRecords.map((rec, idx) => (
+                          <div key={rec.id || idx} className="p-2 bg-[#FAF9F6] border border-[#E7DFCE] rounded-xl text-[11px] font-mono flex items-center justify-between">
+                            <div>
+                              <span className="font-bold text-[#1B4332]">{rec.endpoint}</span>
+                              <span className="text-slate-500 ml-2">SKU: {rec.sku}</span>
+                              {rec.place_name && <span className="text-slate-700 ml-2">({rec.place_name})</span>}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={rec.cache_hit ? 'text-blue-700 font-bold' : 'text-emerald-700'}>
+                                {rec.cache_hit ? 'CACHE HIT' : (rec.cost_label || 'R$ 0,00')}
+                              </span>
+                              <span className="text-slate-400">{new Date(rec.timestamp).toLocaleTimeString('pt-BR')}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-[#64748B] italic">Nenhuma chamada externa realizada até o momento.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* SPRINT 10B REQUIREMENT 13: TESTE CONTROLADO MINI MUNDO */}
+            <div className="bg-white border border-[#E7DFCE] p-5 rounded-3xl shadow-xs space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full inline-block mb-1">
+                    Sprint 10B • Pré-Ativação Controlada
+                  </span>
+                  <h4 className="text-sm font-extrabold text-[#1B4332]">
+                    Teste Controlado — Mini Mundo (Gramado - RS)
+                  </h4>
+                  <p className="text-xs text-[#64748B]">
+                    Ação administrativa preparada para validar resolução inicial cirúrgica (1 chamada máx, sem fotos, sem alteração de BD).
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowMiniMundoModal(true)}
+                  className="px-4 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>Preparar Teste Mini Mundo</span>
+                </button>
+              </div>
+
+              <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-2xl text-xs text-amber-900 leading-relaxed">
+                ℹ️ <strong>Protocolo Sprint 10B:</strong> Esta ação valida todo o encadeamento de Cost Guard, FieldMask e DTOs, mas <strong>NÃO realiza chamadas externas</strong> enquanto <code>GOOGLE_PLACES_ENABLED=false</code>.
+              </div>
             </div>
           </div>
         )}
@@ -2080,6 +2385,129 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         )}
       </div>
+
+      {/* MINI MUNDO PRE-ACTIVATION TEST MODAL (Sprint 10B Requirement 13) */}
+      {showMiniMundoModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 overflow-y-auto">
+          <div className="bg-white w-full max-w-lg rounded-3xl border border-[#E7DFCE] shadow-2xl p-5 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-[#F1EBE0]">
+              <div>
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full inline-block mb-1">
+                  Sprint 10B • Requisito 13
+                </span>
+                <h3 className="text-base font-extrabold text-[#1B4332]">
+                  TESTAR GOOGLE PLACES — MINI MUNDO
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowMiniMundoModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* 9 Requirements of Mini Mundo test */}
+            <div className="space-y-2 text-xs">
+              <div className="p-3 bg-[#FAF9F6] rounded-2xl border border-[#E7DFCE] space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Local Alvo:</span>
+                  <strong className="text-[#1E293B]">Mini Mundo</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Cidade:</span>
+                  <strong className="text-[#1E293B]">Gramado - RS</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Tipo de Ação:</span>
+                  <strong className="text-[#1E293B]">Resolução Inicial de Candidatos</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Requisições Máximas:</span>
+                  <strong className="text-emerald-700">1 (Uma)</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Download de Fotos:</span>
+                  <strong className="text-rose-700">NÃO (Desativado)</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Importação Automática:</span>
+                  <strong className="text-rose-700">NÃO (Apenas apresentação)</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Alterar Registro no BD:</span>
+                  <strong className="text-rose-700">NÃO (Até confirmação manual)</strong>
+                </div>
+                <div className="flex flex-col pt-1 border-t border-[#E7DFCE]">
+                  <span className="text-slate-500">FieldMask Cirúrgico Obrigatório:</span>
+                  <code className="font-mono text-[10px] text-[#1B4332] bg-white p-1.5 rounded-lg border border-[#E7DFCE] mt-0.5 break-all">
+                    places.id,places.displayName,places.formattedAddress,places.location,places.types
+                  </code>
+                </div>
+              </div>
+
+              {/* Explicit confirmation checkbox (Requirement 13.1) */}
+              <label className="flex items-start gap-2.5 p-3 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={miniMundoConfirmed}
+                  onChange={(e) => setMiniMundoConfirmed(e.target.checked)}
+                  className="mt-0.5 rounded text-[#1B4332] focus:ring-[#1B4332]"
+                />
+                <span className="text-xs text-[#1E293B] leading-relaxed">
+                  <strong>Confirmação Explícita Obrigatória:</strong> Confirmo que este teste avalia o Cost Guard e o fluxo defensivo sem persistir dados no catálogo e sem consumir chamadas pagas desnecessárias.
+                </span>
+              </label>
+
+              {miniMundoTestResult && (
+                <div className={`p-3 rounded-2xl border text-xs space-y-1 ${
+                  miniMundoTestResult.ready 
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                    : 'bg-rose-50 border-rose-200 text-rose-950'
+                }`}>
+                  <div className="flex items-center gap-1.5 font-bold">
+                    {miniMundoTestResult.ready ? (
+                      <>
+                        <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                        <span>Status: Pronto para Teste Defensivo</span>
+                      </>
+                    ) : (
+                      <>
+                        <AlertCircle className="w-4 h-4 text-rose-700" />
+                        <span>Status: Bloqueado</span>
+                      </>
+                    )}
+                  </div>
+                  <p className="text-[11px] leading-relaxed">{miniMundoTestResult.message}</p>
+                  <div className="font-mono text-[10px] text-slate-600 pt-1">
+                    Chamadas Reais Executadas: {miniMundoTestResult.executedRealCall ? 'SIM' : '0 (ZERO)'} • Cost Guard: {miniMundoTestResult.costGuardStatus}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#F1EBE0]">
+              <button
+                type="button"
+                onClick={() => setShowMiniMundoModal(false)}
+                className="px-4 py-2 border border-[#E7DFCE] text-[#64748B] hover:text-[#1E293B] text-xs font-bold rounded-xl"
+              >
+                Fechar
+              </button>
+
+              <button
+                type="button"
+                onClick={handleRunMiniMundoPreActivation}
+                disabled={!miniMundoConfirmed || isTestingMiniMundo}
+                className="px-4 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <Search className="w-3.5 h-3.5" />
+                <span>{isTestingMiniMundo ? 'Validando...' : 'Executar Teste de Pré-Ativação'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Place Editor Modal (Sprint 10A Section 3 & Hotfix 10A.2) */}
       <PlaceEditorModal

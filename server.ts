@@ -31,18 +31,24 @@ import {
 
 dotenv.config();
 
-// Ensure production mode if running compiled bundle or if dist/ exists
 if (!process.env.NODE_ENV) {
-  const hasDist = fs.existsSync(path.join(process.cwd(), 'dist', 'index.html'));
-  process.env.NODE_ENV = hasDist ? 'production' : 'development';
+  process.env.NODE_ENV = 'development';
 }
 
 // 1. Validate Environment on startup
 const env = validateServerEnv();
 const requireAdmin = createAdminAuthMiddleware(env.ADMIN_API_KEY);
 
-// Cloud Run and production listen on process.env.PORT || 8080 on 0.0.0.0
-const PORT = Number(process.env.PORT) || 8080;
+// AI Studio and local development listen on port 3000 (process.env.PORT || 3000) on 0.0.0.0
+function getPort(): number {
+  const portArgIndex = process.argv.indexOf('--port');
+  if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
+    const parsed = Number(process.argv[portArgIndex + 1]);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return Number(process.env.PORT) || 3000;
+}
+const PORT = getPort();
 
 // Lazy initialized Gemini client
 let geminiClient: GoogleGenAI | null = null;
@@ -1838,6 +1844,43 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
+  app.get('/api/admin/places/costguard/audit', requireAdmin, (req, res) => {
+    try {
+      const limit = Number(req.query.limit || 50);
+      const records = googlePlacesCostGuard.getAuditRecords(limit);
+      res.json(records);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/admin/places/costguard/pricing', requireAdmin, (req, res) => {
+    try {
+      const pricing = googlePlacesCostGuard.getPricingTable();
+      res.json(pricing);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/admin/places/costguard/pricing', requireAdmin, (req, res) => {
+    try {
+      const { sku, costBrl } = req.body;
+      if (!sku) {
+        res.status(400).json({ error: 'SKU é obrigatório.' });
+        return;
+      }
+      const updated = googlePlacesCostGuard.updatePricingItem(sku, costBrl);
+      if (!updated) {
+        res.status(404).json({ error: `SKU "${sku}" não encontrado na tabela de pricing.` });
+        return;
+      }
+      res.json({ success: true, item: updated, pricingTable: googlePlacesCostGuard.getPricingTable() });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
   app.get('/api/admin/places/:id', requireAdmin, async (req, res) => {
     try {
       const place = await supabaseServer.getPlaceById(req.params.id);
@@ -2109,7 +2152,36 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  // Sprint 10A Section 7, 8, 9: Controlled Candidate Preview & Import from Google Places
+  // Sprint 10B Requirement 8 & 9: Controlled Candidate Search, Selection, and Place ID Linking
+  app.post('/api/admin/places/:id/google-candidates', requireAdmin, async (req, res) => {
+    try {
+      const localPlace = await supabaseServer.getPlaceById(req.params.id);
+      const query = req.body.query || (localPlace ? `${localPlace.name} ${localPlace.city}` : '');
+      const result = await googlePlacesServer.searchCandidates(query, {
+        localPlaceId: req.params.id,
+        maxResults: req.body.maxResults || 5
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/admin/places/:id/google-link', requireAdmin, async (req, res) => {
+    try {
+      const { google_place_id } = req.body;
+      if (!google_place_id || typeof google_place_id !== 'string') {
+        res.status(400).json({ error: 'google_place_id inválido ou ausente.' });
+        return;
+      }
+      const updated = await googlePlacesServer.linkGooglePlaceId(req.params.id, google_place_id);
+      res.json({ success: true, place: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Sprint 10A Section 7, 8, 9 & Sprint 10B: Controlled Candidate Preview & Import from Google Places
   app.post('/api/admin/places/:id/google-preview', requireAdmin, async (req, res) => {
     try {
       const localPlace = await supabaseServer.getPlaceById(req.params.id);
@@ -2130,6 +2202,16 @@ ${JSON.stringify(context || {})}`;
       }
       const updated = await googlePlacesServer.importPlaceFromGoogle(req.params.id, candidate, options || {});
       res.json({ success: true, place: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Sprint 10B Section 13: Test Google Places - Mini Mundo Pre-activation endpoint
+  app.post('/api/admin/places/test-mini-mundo', requireAdmin, async (req, res) => {
+    try {
+      const result = await googlePlacesServer.testMiniMundoPreActivation();
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -2192,18 +2274,36 @@ ${JSON.stringify(context || {})}`;
   // 11. Vite Middleware & Production Static Serving (Immutable Asset Cache)
   // -------------------------------------------------------------------------
   const distPath = path.join(process.cwd(), 'dist');
-  const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
-  const isProduction = process.env.NODE_ENV === 'production' || hasDist;
+  const isProduction = process.env.NODE_ENV === 'production';
 
   // Serve uploaded images statically
-  app.use('/uploads', express.static(path.join(distPath, 'uploads')));
+  const uploadsPath = path.join(process.cwd(), 'uploads');
+  if (fs.existsSync(uploadsPath)) {
+    app.use('/uploads', express.static(uploadsPath));
+  } else if (fs.existsSync(path.join(distPath, 'uploads'))) {
+    app.use('/uploads', express.static(path.join(distPath, 'uploads')));
+  }
 
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { 
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
+    app.get('*', async (req, res, next) => {
+      try {
+        const url = req.originalUrl;
+        let template = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
+        template = await vite.transformIndexHtml(url, template);
+        res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+      } catch (e: any) {
+        vite.ssrFixStacktrace(e);
+        next(e);
+      }
+    });
   } else {
     // Versioned/hashed assets receive 1-year immutable caching (Sprint 8B - Requirement 1)
     app.use('/assets', express.static(path.join(distPath, 'assets'), {

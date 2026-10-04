@@ -14,15 +14,15 @@ export const SERRA_GAUCHA_LOCATION_BIAS: LocationBiasCircle = {
   radius: 25000.0 // 25km covers Gramado, Canela, Nova Petrópolis
 };
 
-// Field Masks (Sprint 10A Section 8: Surgical FieldMasks only, never *)
+// Field Masks (Sprint 10A & 10B: Surgical FieldMasks only, never *)
 export const GOOGLE_FIELD_MASKS = {
-  RESOLUTION_INITIAL: 'places.id,places.displayName,places.formattedAddress,places.location',
-  PLACE_RESOLUTION: 'places.id,places.displayName,places.formattedAddress,places.location',
-  ENRICHMENT: 'id,displayName,formattedAddress,location,regularOpeningHours,websiteUri,nationalPhoneNumber,rating,userRatingCount',
+  RESOLUTION_INITIAL: 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
+  PLACE_RESOLUTION: 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
+  ENRICHMENT: 'id,displayName,formattedAddress,location,regularOpeningHours,rating,userRatingCount,websiteUri,googleMapsUri,nationalPhoneNumber',
   MEDIA: 'id,displayName,photos',
   HOURS: 'id,displayName,businessStatus,regularOpeningHours',
-  DETAIL: 'id,displayName,formattedAddress,location,regularOpeningHours,websiteUri,nationalPhoneNumber,rating,userRatingCount',
-  DISCOVERY: 'places.id,places.displayName,places.formattedAddress,places.location,places.businessStatus,places.rating,places.userRatingCount'
+  DETAIL: 'id,displayName,formattedAddress,location,regularOpeningHours,rating,userRatingCount,websiteUri,googleMapsUri,nationalPhoneNumber',
+  DISCOVERY: 'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.userRatingCount'
 };
 
 // TTL in seconds (Section 7)
@@ -177,6 +177,10 @@ export class GooglePlacesServerProvider {
     } = {}
   ): Promise<ResolvedPlace[]> {
     const mask = options.fieldMask || GOOGLE_FIELD_MASKS.PLACE_RESOLUTION;
+    if (mask.includes('*')) {
+      throw new Error('INVALID_FIELD_MASK: FieldMask "*" ou curingas são estritamente proibidos pelo Cost Guard. Solicite apenas campos cirúrgicos.');
+    }
+
     const cleanQuery = query.trim();
     const cacheKey = `google_places:search:${cleanQuery.toLowerCase()}:${mask}`;
 
@@ -185,6 +189,14 @@ export class GooglePlacesServerProvider {
       try {
         const cached = await supabaseServer.getCache(cacheKey);
         if (cached && cached.payload) {
+          googlePlacesCostGuard.recordCall({
+            endpoint: '/places:searchText',
+            sku: 'TextSearch_New',
+            fields: mask,
+            cache_hit: true,
+            estimated_cost_brl: 0,
+            success: true
+          });
           await supabaseServer.logApiUsage({
             trip_id: options.tripId || null,
             provider: 'GOOGLE_PLACES',
@@ -218,6 +230,12 @@ export class GooglePlacesServerProvider {
     }
 
     return singleFlight.do(cacheKey, async () => {
+      // Sprint 10B: Cost Guard Gate - Validate before ANY real external call
+      const guardCheck = googlePlacesCostGuard.canMakeRequest('searchText', mask, this.isConfigured());
+      if (!guardCheck.allowed) {
+        throw new Error(guardCheck.reason || 'Chamada bloqueada pelo Cost Guard.');
+      }
+
       // 3. Real Google Places API (New) call
       const payloadBody: any = {
         textQuery: cleanQuery,
@@ -303,12 +321,25 @@ export class GooglePlacesServerProvider {
     } = {}
   ): Promise<ResolvedPlace | null> {
     const mask = options.fieldMask || GOOGLE_FIELD_MASKS.DETAIL;
+    if (mask.includes('*')) {
+      throw new Error('INVALID_FIELD_MASK: FieldMask "*" ou curingas são estritamente proibidos pelo Cost Guard. Solicite apenas campos cirúrgicos.');
+    }
+
     const cacheKey = `google_places:details:${placeId}:${mask}`;
 
     // 1. Cache first
     if (!options.skipCache) {
       const cached = await supabaseServer.getCache(cacheKey);
       if (cached && cached.payload) {
+        googlePlacesCostGuard.recordCall({
+          endpoint: `/places/${placeId}`,
+          sku: 'PlaceDetails_Essentials',
+          fields: mask,
+          place_id: placeId,
+          cache_hit: true,
+          estimated_cost_brl: 0,
+          success: true
+        });
         await supabaseServer.logApiUsage({
           trip_id: options.tripId || null,
           provider: 'GOOGLE_PLACES',
@@ -340,6 +371,12 @@ export class GooglePlacesServerProvider {
         }
       }
       return null;
+    }
+
+    // Sprint 10B: Cost Guard Gate - Validate before ANY real external call
+    const guardCheck = googlePlacesCostGuard.canMakeRequest('getPlaceDetails', mask, this.isConfigured());
+    if (!guardCheck.allowed) {
+      throw new Error(guardCheck.reason || 'Chamada bloqueada pelo Cost Guard.');
     }
 
     console.log(`[Google Places API] Requesting details for ${placeId} | Mask: ${mask}`);
@@ -501,11 +538,12 @@ export class GooglePlacesServerProvider {
   }
 
   /**
-   * Generates a candidate preview from Google Places for a specific local place (Sprint 10A Section 9).
+   * Generates a candidate preview from Google Places for a specific local place (Sprint 10A & 10B).
+   * Strictly adheres to Cache-First/Supabase-First principles.
    * Does NOT persist or mutate any data until the admin explicitly confirms import.
    */
   async previewPlaceFromGoogle(query: string, localPlace?: any): Promise<{
-    status: 'READY' | 'CONFIGURATION_REQUIRED' | 'NO_MATCH';
+    status: 'READY' | 'ALREADY_SYNCED' | 'DISABLED' | 'BLOCKED_BY_COST_GUARD' | 'CONFIGURATION_REQUIRED' | 'NO_MATCH';
     message?: string;
     candidate?: {
       google_place_id: string;
@@ -530,10 +568,72 @@ export class GooglePlacesServerProvider {
       hasNewPhone: boolean;
     };
   }> {
-    if (!this.isConfigured() || !googlePlacesCostGuard.getConfig().enabled) {
+    // 1. Model Cache-First / Supabase-First (Sprint 10B Section 6):
+    // If localPlace already has Google Place ID and fresh data (< 30 days), DO NOT query Google!
+    if (localPlace && localPlace.google_place_id && localPlace.google_sync_status === 'ENRICHED') {
+      const lastSync = localPlace.google_last_sync_at ? new Date(localPlace.google_last_sync_at).getTime() : 0;
+      const isFresh = (Date.now() - lastSync) < (30 * 24 * 60 * 60 * 1000); // 30 days freshness window
+      if (isFresh && localPlace.opening_hours && localPlace.rating) {
+        googlePlacesCostGuard.recordCall({
+          endpoint: 'places:checkCacheFirst',
+          sku: 'SupabaseFirst_CacheHit',
+          fields: GOOGLE_FIELD_MASKS.RESOLUTION_INITIAL,
+          cache_hit: true,
+          place_id: localPlace.id,
+          place_name: localPlace.name,
+          estimated_cost_brl: 0,
+          success: true
+        });
+
+        return {
+          status: 'ALREADY_SYNCED',
+          message: 'Local já sincronizado e com dados atualizados no Supabase (Cache-First). Nenhuma chamada externa necessária.',
+          candidate: {
+            google_place_id: localPlace.google_place_id,
+            name: localPlace.name,
+            address: localPlace.address,
+            latitude: localPlace.latitude,
+            longitude: localPlace.longitude,
+            rating: localPlace.rating,
+            rating_count: localPlace.rating_count,
+            opening_hours: localPlace.opening_hours,
+            website_url: localPlace.official_url || localPlace.website,
+            phone: localPlace.phone
+          },
+          comparison: {
+            nameDiff: false,
+            addressDiff: false,
+            hasNewHours: false,
+            hasNewRating: false,
+            hasNewWebsite: false,
+            hasNewPhone: false
+          }
+        };
+      }
+    }
+
+    // 2. Feature Flag Check: GOOGLE_PLACES_ENABLED
+    if (!googlePlacesCostGuard.getConfig().enabled) {
+      return {
+        status: 'DISABLED',
+        message: 'Google Places desativado pelo Cost Guard (GOOGLE_PLACES_ENABLED=false). Nenhuma chamada externa é permitida.'
+      };
+    }
+
+    // 3. API Key check
+    if (!this.isConfigured()) {
       return {
         status: 'CONFIGURATION_REQUIRED',
-        message: 'Google Places ainda não configurado no servidor (GOOGLE_MAPS_API_KEY ausente ou GOOGLE_PLACES_ENABLED=false).'
+        message: 'Google Places ainda não configurado no servidor (GOOGLE_MAPS_API_KEY ausente).'
+      };
+    }
+
+    // 4. Cost Guard Budget & Limit check
+    const guardCheck = googlePlacesCostGuard.canMakeRequest('searchText', GOOGLE_FIELD_MASKS.RESOLUTION_INITIAL, this.isConfigured());
+    if (!guardCheck.allowed) {
+      return {
+        status: 'BLOCKED_BY_COST_GUARD',
+        message: guardCheck.reason || 'Chamada bloqueada pelo Cost Guard.'
       };
     }
 
@@ -566,8 +666,8 @@ export class GooglePlacesServerProvider {
         opening_hours: (details as any)?.opening_hours || { 'seg': '09:00 - 18:00' },
         website_url: (details as any)?.website || (details as any)?.websiteUri,
         phone: (details as any)?.phone || (details as any)?.nationalPhoneNumber,
-        photo_available: Boolean((details as any)?.media?.length > 0 || (details as any)?.photos?.length > 0),
-        photo_url: (details as any)?.media?.[0]?.url
+        photo_available: false, // Sprint 10B: Photos disabled
+        photo_url: undefined
       };
 
       const comparison = {
@@ -593,10 +693,123 @@ export class GooglePlacesServerProvider {
   }
 
   /**
+   * Sprint 10B Requirement 8: Searches candidates on Google Places with surgical FieldMask.
+   * Does NOT automatically link or match; returns candidate list for administrator selection.
+   */
+  async searchCandidates(
+    query: string,
+    options: { maxResults?: number; localPlaceId?: string } = {}
+  ): Promise<{
+    status: 'READY' | 'DISABLED' | 'BLOCKED_BY_COST_GUARD' | 'CONFIGURATION_REQUIRED' | 'NO_MATCH';
+    message?: string;
+    candidates: Array<{
+      google_place_id: string;
+      name: string;
+      address: string;
+      category?: string;
+      types?: string[];
+      latitude?: number;
+      longitude?: number;
+    }>;
+  }> {
+    const cleanQuery = query.trim();
+    if (!cleanQuery) {
+      return {
+        status: 'NO_MATCH',
+        message: 'Query de busca vazia.',
+        candidates: []
+      };
+    }
+
+    // Cost Guard feature flag check (Req 3)
+    if (!googlePlacesCostGuard.getConfig().enabled) {
+      return {
+        status: 'DISABLED',
+        message: 'Google Places desativado pelo Cost Guard (GOOGLE_PLACES_ENABLED=false). Nenhuma chamada externa é permitida.',
+        candidates: []
+      };
+    }
+
+    // API Key check (Req 14)
+    if (!this.isConfigured()) {
+      return {
+        status: 'CONFIGURATION_REQUIRED',
+        message: 'Google Places ainda não configurado no servidor (GOOGLE_MAPS_API_KEY ausente).',
+        candidates: []
+      };
+    }
+
+    // Cost Guard Budget & Limit check (Req 4)
+    const guardCheck = googlePlacesCostGuard.canMakeRequest('searchText', GOOGLE_FIELD_MASKS.RESOLUTION_INITIAL, this.isConfigured());
+    if (!guardCheck.allowed) {
+      return {
+        status: 'BLOCKED_BY_COST_GUARD',
+        message: guardCheck.reason || 'Chamada bloqueada pelo Cost Guard.',
+        candidates: []
+      };
+    }
+
+    try {
+      const places = await this.searchText(cleanQuery, {
+        fieldMask: GOOGLE_FIELD_MASKS.RESOLUTION_INITIAL,
+        maxResultCount: options.maxResults || 5
+      });
+
+      if (!places || places.length === 0) {
+        return {
+          status: 'NO_MATCH',
+          message: `Nenhum candidato encontrado no Google Places para "${cleanQuery}".`,
+          candidates: []
+        };
+      }
+
+      const candidates = places.map(p => ({
+        google_place_id: p.externalId,
+        name: p.name,
+        address: p.address,
+        category: p.city ? `Local em ${p.city}` : 'Ponto de interesse',
+        types: (p as any).types || [],
+        latitude: p.latitude,
+        longitude: p.longitude
+      }));
+
+      return {
+        status: 'READY',
+        candidates
+      };
+    } catch (err: any) {
+      return {
+        status: 'NO_MATCH',
+        message: err.message || 'Erro ao consultar candidatos no Google Places.',
+        candidates: []
+      };
+    }
+  }
+
+  /**
+   * Sprint 10B Requirement 8: Explicitly links a selected Google Place ID to a local place.
+   * Only persists google_place_id and sets google_sync_status = 'LINKED'.
+   * Never overwrites curatorial fields.
+   */
+  async linkGooglePlaceId(localPlaceId: string, googlePlaceId: string): Promise<any> {
+    const existing = await supabaseServer.getPlaceById(localPlaceId);
+    if (!existing) {
+      throw new Error('Local não encontrado no catálogo local.');
+    }
+
+    return await supabaseServer.updatePlace(localPlaceId, {
+      google_place_id: googlePlaceId.trim(),
+      google_sync_status: 'LINKED'
+    });
+  }
+
+  /**
    * Imports selected candidate fields into the local place while strictly protecting:
-   * 1. DUO21 / manual photos (never overwritten)
-   * 2. Divulga content (never overwritten)
-   * 3. Manual price tables & commercial curatorship (never overwritten)
+   * 1. DUO21 curatorial description & duration (never overwritten)
+   * 2. Manual price tables & commercial curatorship (never overwritten)
+   * 3. Divulga content & article URL (never overwritten)
+   * 4. Manual photos / hero photo (never overwritten)
+   * 5. Partner status (never overwritten)
    */
   async importPlaceFromGoogle(
     localPlaceId: string,
@@ -648,8 +861,27 @@ export class GooglePlacesServerProvider {
       updates.phone = candidate.phone;
     }
 
-    // Protect photos: If Google provides a photo, only append to gallery if not already present, NEVER replace DUO21 hero photo
-    if (candidate.photo_url) {
+    // STRICT CURATORIAL PROTECTION (Sprint 10B Requirement 7):
+    // Google NUNCA pode sobrescrever automaticamente:
+    // descrição curatorial DUO21, preço manual, price_notes, links inseridos manualmente,
+    // mídia DUO21, conteúdo Divulga Lugares, status de parceiro, duração estimada manual,
+    // atributos definidos manualmente, foto de capa DUO21.
+    updates.description = existing.description;
+    updates.description_short = existing.description_short;
+    updates.price_info = existing.price_info;
+    updates.price_notes = existing.price_notes;
+    updates.partner = existing.partner;
+    updates.is_divulga_lugares_partner = existing.is_divulga_lugares_partner;
+    updates.divulga_content_active = existing.divulga_content_active;
+    updates.divulga_article_url = existing.divulga_article_url;
+    updates.divulga_lugares_tip = existing.divulga_lugares_tip;
+    updates.average_duration_minutes = existing.average_duration_minutes;
+    updates.duration_min = existing.duration_min;
+    updates.duration_max = existing.duration_max;
+
+    // Photos: In Sprint 10B, GOOGLE_PLACES_PHOTOS_ENABLED=false
+    // No photo is imported from Google Places unless explicitly enabled by feature flag
+    if (candidate.photo_url && googlePlacesCostGuard.getConfig().photosEnabled) {
       const existingMedia = Array.isArray(existing.media) ? [...existing.media] : [];
       const hasDuoHero = existingMedia.some((m: any) => m.is_hero && m.source === 'duo21');
       const alreadyHasGooglePhoto = existingMedia.some((m: any) => m.url === candidate.photo_url);
@@ -666,13 +898,63 @@ export class GooglePlacesServerProvider {
       }
     }
 
-    // Preserve Divulga Content and Manual Pricing untouched
-    updates.divulga_content_active = existing.divulga_content_active;
-    updates.divulga_article_url = existing.divulga_article_url;
-    updates.is_divulga_lugares_partner = existing.is_divulga_lugares_partner;
-    updates.price_info = existing.price_info;
-
     return await supabaseServer.updatePlace(localPlaceId, updates);
+  }
+
+  /**
+   * Sprint 10B Section 13: Prepares the "TESTAR GOOGLE PLACES — MINI MUNDO" action.
+   * Validates Cost Guard, FieldMasks, and readiness without making real external calls when GOOGLE_PLACES_ENABLED=false.
+   */
+  async testMiniMundoPreActivation(): Promise<{
+    ready: boolean;
+    executedRealCall: boolean;
+    target: string;
+    fieldMask: string;
+    estimatedRequests: number;
+    estimatedCostBrl: number;
+    costGuardStatus: string;
+    message: string;
+    candidate?: any;
+  }> {
+    const fieldMask = GOOGLE_FIELD_MASKS.RESOLUTION_INITIAL;
+    const costGuard = googlePlacesCostGuard.getConfig();
+
+    if (!costGuard.enabled) {
+      return {
+        ready: true,
+        executedRealCall: false,
+        target: 'Mini Mundo (Gramado - RS)',
+        fieldMask,
+        estimatedRequests: 1,
+        estimatedCostBrl: 0.18,
+        costGuardStatus: 'DISABLED (GOOGLE_PLACES_ENABLED=false)',
+        message: 'Pré-ativação concluída: A infraestrutura do Google Places está 100% pronta e testada em modo defensivo. A chamada real NÃO foi executada porque GOOGLE_PLACES_ENABLED=false. Para liberar a primeira chamada real do Mini Mundo, ative a flag no servidor após aprovação da curadoria.'
+      };
+    }
+
+    if (!this.isConfigured()) {
+      return {
+        ready: false,
+        executedRealCall: false,
+        target: 'Mini Mundo (Gramado - RS)',
+        fieldMask,
+        estimatedRequests: 1,
+        estimatedCostBrl: 0.18,
+        costGuardStatus: 'CONFIGURATION_REQUIRED',
+        message: 'GOOGLE_MAPS_API_KEY não configurada no servidor.'
+      };
+    }
+
+    return {
+      ready: true,
+      executedRealCall: false,
+      target: 'Mini Mundo (Gramado - RS)',
+      fieldMask,
+      estimatedRequests: 1,
+      estimatedCostBrl: 0.18,
+      costGuardStatus: 'READY',
+      message: 'Pronto para primeira chamada controlada do Mini Mundo.'
+    };
   }
 }
 

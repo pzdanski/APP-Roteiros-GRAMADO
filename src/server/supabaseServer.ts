@@ -121,7 +121,8 @@ export const VALID_PLACE_COLUMNS = new Set([
   'divulga_tiktok_url', 'divulga_article_url', 'divulga_content_title',
   'google_last_sync_at', 'google_sync_status', 'google_data_version',
   'price_notes', 'price_valid_from', 'price_valid_until',
-  'data_quality_label', 'data_quality_score', 'always_open'
+  'data_quality_label', 'data_quality_score', 'always_open',
+  'hours_source', 'hours_last_checked_at', 'rating_source', 'rating_last_checked_at'
 ]);
 
 export function resolvePlaceUuid(id?: string, slug?: string): string {
@@ -207,6 +208,10 @@ export function mapRawPlaceToClientPlace(row: any): any {
     price_valid_from: row.price_valid_from || null,
     price_valid_until: row.price_valid_until || null,
     always_open: Boolean(row.always_open),
+    hours_source: row.hours_source || 'duo21',
+    hours_last_checked_at: row.hours_last_checked_at || null,
+    rating_source: row.rating_source || 'duo21',
+    rating_last_checked_at: row.rating_last_checked_at || null,
     data_quality_label: row.data_quality_label,
     data_quality_score: row.data_quality_score
   };
@@ -1455,9 +1460,9 @@ export const supabaseServer = {
 
   // ---------------------------------------------------------------------------
   async logApiUsage(record: any): Promise<void> {
-    const entry = {
-      id: record.id || `usage_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      trip_id: record.trip_id || null,
+    const isUuid = (str?: string) => Boolean(str && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str));
+    const entry: any = {
+      trip_id: isUuid(record.trip_id) ? record.trip_id : null,
       provider: record.provider || 'OTHER',
       operation: record.operation || 'query',
       request_count: record.request_count || 1,
@@ -1468,14 +1473,38 @@ export const supabaseServer = {
       created_at: record.created_at || new Date().toISOString()
     };
 
+    if (record.id && isUuid(record.id)) {
+      entry.id = record.id;
+    }
+
+    if (record.metadata) {
+      entry.metadata = record.metadata;
+    }
+
     if (env.DATA_MODE === 'mock') {
+      if (!entry.id) {
+        entry.id = `usage_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      }
       mockStore.api_usage.push(entry);
       return;
     }
 
     if (!serverClient) throw new Error('DATABASE_UNAVAILABLE');
-    const { error } = await serverClient.from('api_usage').insert(entry);
-    if (error) throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
+    try {
+      const { error } = await serverClient.from('api_usage').insert(entry);
+      if (error) {
+        if (error.message.includes('metadata') || (error as any).code === '42703') {
+          // If metadata column doesn't exist yet, retry without metadata
+          const { metadata, ...fallbackEntry } = entry;
+          const retry = await serverClient.from('api_usage').insert(fallbackEntry);
+          if (retry.error) throw new Error(`DATABASE_UNAVAILABLE: ${retry.error.message}`);
+          return;
+        }
+        throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
+      }
+    } catch (err: any) {
+      console.warn('[logApiUsage] Database insert error:', err.message);
+    }
   },
 
   async getApiUsageMetrics(): Promise<any> {

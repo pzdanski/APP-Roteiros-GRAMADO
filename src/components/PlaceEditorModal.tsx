@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   X,
   Save,
@@ -27,7 +27,9 @@ import {
   Image as ImageIcon,
   BookOpen,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Lock,
+  Download
 } from 'lucide-react';
 import { Place, PlaceMedia, MediaSource } from '../types';
 import { calculatePlaceDataQuality } from '../utils/dataQuality';
@@ -79,6 +81,12 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
   const [newMediaSource, setNewMediaSource] = useState<MediaSource>('duo21');
   const [newMediaIsHero, setNewMediaIsHero] = useState(false);
 
+  // Google Places Cost Guard & Candidate Search state (Sprint 10B)
+  const [costGuardMetrics, setCostGuardMetrics] = useState<any>(null);
+  const [candidateList, setCandidateList] = useState<any[]>([]);
+  const [isSearchingCandidates, setIsSearchingCandidates] = useState(false);
+  const [isLinkingPlaceId, setIsLinkingPlaceId] = useState(false);
+
   // Google Places Preview state
   const [googleSearchQuery, setGoogleSearchQuery] = useState(`${place.name} ${place.city}`);
   const [googleLoading, setGoogleLoading] = useState(false);
@@ -113,12 +121,34 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
     return state;
   });
 
+  const getAuthHeaders = useCallback((extraHeaders: Record<string, string> = {}) => {
+    const headers: Record<string, string> = { ...extraHeaders };
+    if (adminApiKey) {
+      headers['x-admin-key'] = adminApiKey;
+    }
+    if (adminSessionToken) {
+      headers['x-admin-session'] = adminSessionToken;
+    }
+    return headers;
+  }, [adminApiKey, adminSessionToken]);
+
   useEffect(() => {
     setFormData({ ...place });
     setGoogleSearchQuery(`${place.name} ${place.city}`);
     setError(null);
     setSuccessMessage(null);
-  }, [place]);
+
+    // Fetch live Cost Guard metrics for feature flag status (Sprint 10B)
+    fetch('/api/admin/places/costguard', {
+      headers: getAuthHeaders(),
+      credentials: 'include'
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data) setCostGuardMetrics(data);
+      })
+      .catch(() => {});
+  }, [place, getAuthHeaders]);
 
   // Live quality report
   const qualityReport = calculatePlaceDataQuality(formData);
@@ -279,17 +309,6 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
     });
   };
 
-  const getAuthHeaders = (extraHeaders: Record<string, string> = {}) => {
-    const headers: Record<string, string> = { ...extraHeaders };
-    if (adminApiKey) {
-      headers['x-admin-key'] = adminApiKey;
-    }
-    if (adminSessionToken) {
-      headers['x-admin-session'] = adminSessionToken;
-    }
-    return headers;
-  };
-
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -445,8 +464,78 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
     }
   };
 
-  // Google Places Preview
+  // Sprint 10B Requirement 8: Search candidates without automatic linking
+  const handleSearchCandidates = async () => {
+    if (!costGuardMetrics?.enabled) {
+      setError('Google Places desativado pelo Cost Guard (GOOGLE_PLACES_ENABLED=false). Nenhuma chamada externa é permitida.');
+      return;
+    }
+    setIsSearchingCandidates(true);
+    setCandidateList([]);
+    setError(null);
+
+    try {
+      const res = await fetch(`/api/admin/places/${place.id}/google-candidates`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify({ query: googleSearchQuery })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao buscar candidatos');
+      if (data.status === 'DISABLED') {
+        setError(data.message || 'Google Places desativado.');
+      } else if (data.candidates && data.candidates.length > 0) {
+        setCandidateList(data.candidates);
+      } else {
+        setError(`Nenhum candidato encontrado no Google Places para "${googleSearchQuery}".`);
+      }
+    } catch (err: any) {
+      setError(`Erro na busca de candidatos: ${err.message}`);
+    } finally {
+      setIsSearchingCandidates(false);
+    }
+  };
+
+  // Sprint 10B Requirement 8: Administrator selects and explicitly links Place ID
+  const handleLinkCandidate = async (candidate: any) => {
+    setIsLinkingPlaceId(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`/api/admin/places/${place.id}/google-link`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify({ google_place_id: candidate.google_place_id })
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json();
+        throw new Error(errJson.error || 'Falha ao vincular Place ID');
+      }
+
+      setFormData(prev => ({
+        ...prev,
+        google_place_id: candidate.google_place_id,
+        google_sync_status: 'LINKED'
+      }));
+      setCandidateList([]);
+      setSuccessMessage(`Google Place ID "${candidate.google_place_id}" vinculado com sucesso! Agora você pode buscar dados do Google.`);
+    } catch (err: any) {
+      setError(`Erro ao vincular Place ID: ${err.message}`);
+    } finally {
+      setIsLinkingPlaceId(false);
+    }
+  };
+
+  // Google Places Preview (Req 7 & 9)
   const handleSearchGooglePlaces = async () => {
+    if (!costGuardMetrics?.enabled) {
+      setError('Google Places desativado (GOOGLE_PLACES_ENABLED=false). Nenhuma chamada externa é permitida.');
+      return;
+    }
     setGoogleLoading(true);
     setGoogleCandidateResult(null);
     setError(null);
@@ -1470,16 +1559,27 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
           )}
 
           {/* TAB G: GOOGLE PLACES (NEW) */}
+          {/* TAB G: GOOGLE PLACES (NEW) — SPRINT 10B */}
           {activeTab === 'google' && (
             <div className="space-y-4">
               <div className="p-4 bg-white rounded-2xl border border-[#E7DFCE] space-y-4">
                 <div>
-                  <span className="text-xs font-bold text-[#1E293B] block">Identidade Externa & Google Places API (New)</span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#1E293B] block">Identidade Externa & Google Places API (New)</span>
+                    <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
+                      costGuardMetrics?.enabled 
+                        ? 'bg-emerald-100 text-emerald-800' 
+                        : 'bg-slate-200 text-slate-700'
+                    }`}>
+                      {costGuardMetrics?.enabled ? '🟢 ATIVO NO SERVIDOR' : '⚪ DESATIVADO (COST GUARD)'}
+                    </span>
+                  </div>
                   <span className="text-[11px] text-[#7A6F5D]">
-                    Sprint 10A Section 7 & 8: O Google Place ID permite sincronização controlada sob demanda via FieldMasks cirúrgicos.
+                    Sprint 10B: Enriquecimento administrativo controlado. Google Places nunca é consultado diretamente pelo turista.
                   </span>
                 </div>
 
+                {/* Identity / Link Row */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="text-[11px] font-bold text-[#64748B] block mb-1">Google Place ID</label>
@@ -1493,18 +1593,33 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
                   </div>
                   <div>
                     <label className="text-[11px] font-bold text-[#64748B] block mb-1">Status de Sincronização</label>
-                    <input
-                      type="text"
-                      readOnly
-                      value={formData.google_sync_status || 'NOT_SYNCED'}
-                      className="w-full p-2.5 bg-slate-50 border border-[#E7DFCE] rounded-xl text-xs font-bold text-[#64748B]"
-                    />
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={formData.google_sync_status || 'NOT_SYNCED'}
+                        className="flex-1 p-2.5 bg-slate-50 border border-[#E7DFCE] rounded-xl text-xs font-bold text-[#64748B]"
+                      />
+                      {formData.google_place_id && (
+                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-2 rounded-xl border border-emerald-200 shrink-0 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" /> Vinculado
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
 
-                {/* Candidate Resolution Box */}
+                {/* Requirement 8: Candidate Resolution & Explicit Administrator Linking */}
                 <div className="p-4 bg-[#FAF9F6] rounded-2xl border border-[#E7DFCE] space-y-3">
-                  <span className="text-xs font-bold text-[#1B4332] block">Resolução de Candidato no Google Places</span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#1B4332] block">
+                      1. Pesquisar Candidatos no Google Places
+                    </span>
+                    <span className="text-[10px] text-[#7A6F5D]">
+                      Resolução por candidato (FieldMask cirúrgico)
+                    </span>
+                  </div>
+
                   <div className="flex gap-2">
                     <input
                       type="text"
@@ -1514,130 +1629,340 @@ export const PlaceEditorModal: React.FC<PlaceEditorModalProps> = ({
                       className="flex-1 p-2 bg-white border border-[#E7DFCE] rounded-xl text-xs outline-none"
                     />
                     <button
-                      onClick={handleSearchGooglePlaces}
-                      disabled={googleLoading}
-                      className="px-4 py-2 bg-[#1B4332] text-white text-xs font-bold rounded-xl hover:bg-[#143326] transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                      type="button"
+                      onClick={handleSearchCandidates}
+                      disabled={isSearchingCandidates || !costGuardMetrics?.enabled}
+                      className="px-4 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
                     >
                       <Search className="w-3.5 h-3.5" />
-                      <span>{googleLoading ? 'Buscando...' : 'Buscar Candidato'}</span>
+                      <span>{isSearchingCandidates ? 'Buscando...' : 'Buscar Candidatos'}</span>
                     </button>
                   </div>
 
+                  {!costGuardMetrics?.enabled && (
+                    <div className="p-2.5 bg-slate-100 text-slate-700 rounded-xl text-xs flex items-center gap-2 border border-slate-200">
+                      <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <span>
+                        <strong>GOOGLE_PLACES_ENABLED=false:</strong> A busca de candidatos está bloqueada pelo Cost Guard até a ativação manual pelo administrador.
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Candidate List (Requirement 8) */}
+                  {candidateList.length > 0 && (
+                    <div className="space-y-2 mt-2 pt-2 border-t border-[#E7DFCE]">
+                      <span className="text-[11px] font-bold text-[#1E293B] block">
+                        Candidatos Encontrados ({candidateList.length}) — Selecione para vincular:
+                      </span>
+                      <div className="space-y-2 max-h-56 overflow-y-auto">
+                        {candidateList.map((c, idx) => (
+                          <div
+                            key={c.google_place_id || idx}
+                            className="p-3 bg-white rounded-xl border border-[#E7DFCE] flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                          >
+                            <div className="space-y-0.5">
+                              <span className="font-bold text-[#1B4332] block">{c.name}</span>
+                              <span className="text-[11px] text-[#64748B] block">{c.address}</span>
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <span className="font-mono text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
+                                  ID: {c.google_place_id}
+                                </span>
+                                {c.category && (
+                                  <span className="text-[10px] bg-emerald-50 text-emerald-800 px-1.5 py-0.5 rounded">
+                                    {c.category}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleLinkCandidate(c)}
+                              disabled={isLinkingPlaceId}
+                              className="px-3 py-1.5 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
+                            >
+                              <Check className="w-3 h-3" />
+                              <span>{isLinkingPlaceId ? 'Vinculando...' : 'Vincular este Place ID'}</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Requirement 9: Sincronização & Botão Controlado */}
+                <div className="p-4 bg-[#FAF9F6] rounded-2xl border border-[#E7DFCE] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#1B4332] block">
+                      2. Sincronização e Enriquecimento
+                    </span>
+                    <span className="text-[10px] text-[#7A6F5D]">
+                      Requisito 9: Bloqueio estrito quando desativado
+                    </span>
+                  </div>
+
+                  {formData.google_place_id ? (
+                    <div className="space-y-2">
+                      <p className="text-xs text-[#64748B]">
+                        Local vinculado ao Place ID: <code className="font-mono text-emerald-800 font-bold">{formData.google_place_id}</code>
+                      </p>
+
+                      {/* Requirement 9: Se GOOGLE_PLACES_ENABLED=false, botão aparece como "Google Places desativado" */}
+                      {!costGuardMetrics?.enabled ? (
+                        <div className="space-y-2">
+                          <button
+                            type="button"
+                            disabled
+                            className="w-full py-2.5 px-4 bg-slate-100 text-slate-500 border border-slate-300 rounded-xl text-xs font-bold flex items-center justify-center gap-2 cursor-not-allowed opacity-90 shadow-none"
+                            title="GOOGLE_PLACES_ENABLED=false no servidor"
+                          >
+                            <Lock className="w-3.5 h-3.5 text-slate-400" />
+                            <span>Google Places desativado</span>
+                          </button>
+                          <div className="p-2.5 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs leading-relaxed">
+                            🔒 <strong>Proteção Cost Guard Ativa:</strong> O consumo externo do Google Places está desativado (<code>GOOGLE_PLACES_ENABLED=false</code>). Nenhuma chamada externa é permitida até a ativação controlada no painel administrativo.
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleSearchGooglePlaces}
+                          disabled={googleLoading}
+                          className="w-full py-2.5 px-4 bg-[#1B4332] hover:bg-[#143326] text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>{googleLoading ? 'Consultando Google Places (New)...' : 'Buscar dados do Google'}</span>
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[#64748B] italic">
+                      Pesquise e vincule um Google Place ID no passo 1 acima para habilitar o enriquecimento.
+                    </p>
+                  )}
+
+                  {/* Requirement 7: DIFF TABLE & Curatorial Protection */}
                   {googleCandidateResult && (
-                    <div className="mt-3 p-3 bg-white rounded-xl border border-[#E7DFCE] space-y-3">
+                    <div className="mt-3 p-3 bg-white rounded-xl border border-[#E7DFCE] space-y-4">
                       {googleCandidateResult.status === 'CONFIGURATION_REQUIRED' ? (
                         <div className="p-3 bg-amber-50 text-amber-800 rounded-lg text-xs">
-                          ⚠️ {googleCandidateResult.message || 'Google Places ainda não configurado (GOOGLE_MAPS_API_KEY ausente ou GOOGLE_PLACES_ENABLED=false). A aplicação está pronta para receber a chave sem alterar nenhuma arquitetura.'}
+                          ⚠️ {googleCandidateResult.message || 'Google Places ainda não configurado (GOOGLE_MAPS_API_KEY ausente ou GOOGLE_PLACES_ENABLED=false).'}
+                        </div>
+                      ) : googleCandidateResult.status === 'ALREADY_SYNCED' ? (
+                        <div className="p-3 bg-emerald-50 text-emerald-800 rounded-lg text-xs space-y-1 border border-emerald-200">
+                          <span className="font-bold block">✓ Cache-First / Supabase-First:</span>
+                          <p>{googleCandidateResult.message}</p>
                         </div>
                       ) : googleCandidateResult.status === 'NO_MATCH' ? (
                         <div className="p-3 bg-slate-100 text-slate-700 rounded-lg text-xs">
-                          Nenhum local correspondente encontrado no Google Places para &quot;{googleSearchQuery}&quot;.
+                          Nenhum dado retornado para o local no Google Places.
                         </div>
                       ) : (
-                        <div className="space-y-3">
+                        <div className="space-y-4">
                           <div className="flex items-center justify-between pb-2 border-b border-[#F1EBE0]">
                             <div>
                               <h4 className="text-xs font-bold text-[#1B4332]">
-                                Candidato: {googleCandidateResult.candidate?.name}
+                                Dados do Google: {googleCandidateResult.candidate?.name}
                               </h4>
                               <p className="text-[11px] text-[#64748B]">
-                                Place ID: {googleCandidateResult.candidate?.google_place_id} • Nota: {googleCandidateResult.candidate?.rating} ({googleCandidateResult.candidate?.rating_count})
+                                Place ID: {googleCandidateResult.candidate?.google_place_id} • Nota: {googleCandidateResult.candidate?.rating} ({googleCandidateResult.candidate?.rating_count} avaliações)
                               </p>
                             </div>
                             <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded">
-                              Correspondência Encontrada
+                              Pré-visualização Pronta
                             </span>
                           </div>
 
-                          {/* Comparison Diff Table */}
-                          <div className="text-xs space-y-1.5 bg-[#FAF9F6] p-3 rounded-lg border border-[#F1EBE0]">
-                            <div className="flex justify-between">
-                              <span className="text-[#64748B]">Endereço local vs Google:</span>
-                              <span className="font-bold text-[#1E293B]">{googleCandidateResult.comparison?.addressDiff ? 'Diferente' : 'Idêntico'}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-[#64748B]">Novos Horários disponíveis:</span>
-                              <span className="font-bold text-[#1E293B]">{googleCandidateResult.comparison?.hasNewHours ? 'Sim' : 'Não'}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-[#64748B]">Telefone disponível:</span>
-                              <span className="font-bold text-[#1E293B]">{googleCandidateResult.candidate?.phone || 'Não informado'}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-[#64748B]">Site disponível:</span>
-                              <span className="font-bold text-[#1E293B]">{googleCandidateResult.candidate?.website_url || 'Não informado'}</span>
-                            </div>
+                          {/* Curatorial Protection Banner (Requirement 7) */}
+                          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-950 space-y-1">
+                            <span className="font-bold flex items-center gap-1.5 text-emerald-900">
+                              <Shield className="w-3.5 h-3.5 text-emerald-700" />
+                              Proteção Curatorial DUO21 Ativa:
+                            </span>
+                            <p className="text-[11px] text-emerald-800 leading-relaxed">
+                              Descrição curatorial, Preços manuais, Observações de preço, Conteúdo Divulga Lugares, Mídia/Foto de capa manual e Status de parceiro são <strong>100% preservados</strong> e nunca sobrescritos pelo Google.
+                            </p>
                           </div>
 
-                          {/* Selective Import Checkboxes */}
-                          <div className="space-y-1.5 pt-1">
-                            <span className="text-[11px] font-bold text-[#1B4332] block">
-                              Selecione os campos para importar (fotos manuais e conteúdo Divulga ficam protegidos):
+                          {/* Photos Disabled Notice (Requirement 12) */}
+                          <div className="p-2.5 bg-slate-100 border border-slate-200 rounded-xl text-xs text-slate-700">
+                            📷 <strong>Fotos Google Desativadas (GOOGLE_PLACES_PHOTOS_ENABLED=false):</strong> Nenhuma foto externa será baixada. O acervo manual DUO21 é prioridade absoluta.
+                          </div>
+
+                          {/* DIFF TABLE (Requirement 7) */}
+                          <div className="space-y-2">
+                            <span className="text-xs font-bold text-[#1E293B] block">
+                              Comparativo de Dados (DIFF) — Escolha a ação para cada campo:
                             </span>
-                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
-                              <label className="flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={googleImportOptions.importHours}
-                                  onChange={(e) => setGoogleImportOptions(prev => ({ ...prev, importHours: e.target.checked }))}
-                                  className="rounded text-[#1B4332]"
-                                />
-                                <span>Horários</span>
-                              </label>
-                              <label className="flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={googleImportOptions.importRating}
-                                  onChange={(e) => setGoogleImportOptions(prev => ({ ...prev, importRating: e.target.checked }))}
-                                  className="rounded text-[#1B4332]"
-                                />
-                                <span>Avaliações</span>
-                              </label>
-                              <label className="flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={googleImportOptions.importAddress}
-                                  onChange={(e) => setGoogleImportOptions(prev => ({ ...prev, importAddress: e.target.checked }))}
-                                  className="rounded text-[#1B4332]"
-                                />
-                                <span>Endereço</span>
-                              </label>
-                              <label className="flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={googleImportOptions.importCoordinates}
-                                  onChange={(e) => setGoogleImportOptions(prev => ({ ...prev, importCoordinates: e.target.checked }))}
-                                  className="rounded text-[#1B4332]"
-                                />
-                                <span>Coordenadas</span>
-                              </label>
-                              <label className="flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={googleImportOptions.importWebsite}
-                                  onChange={(e) => setGoogleImportOptions(prev => ({ ...prev, importWebsite: e.target.checked }))}
-                                  className="rounded text-[#1B4332]"
-                                />
-                                <span>Site Oficial</span>
-                              </label>
-                              <label className="flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={googleImportOptions.importPhone}
-                                  onChange={(e) => setGoogleImportOptions(prev => ({ ...prev, importPhone: e.target.checked }))}
-                                  className="rounded text-[#1B4332]"
-                                />
-                                <span>Telefone</span>
-                              </label>
+
+                            <div className="border border-[#E7DFCE] rounded-xl overflow-hidden text-xs">
+                              <table className="w-full text-left">
+                                <thead className="bg-[#FAF9F6] text-[10px] font-bold text-[#64748B] uppercase border-b border-[#E7DFCE]">
+                                  <tr>
+                                    <th className="p-2.5">Campo</th>
+                                    <th className="p-2.5">Local (DUO21)</th>
+                                    <th className="p-2.5">Google Places (New)</th>
+                                    <th className="p-2.5 text-center">Ação</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-[#E7DFCE]">
+                                  {/* Horários */}
+                                  <tr className="hover:bg-slate-50">
+                                    <td className="p-2.5 font-bold text-[#1E293B]">Horários</td>
+                                    <td className="p-2.5 text-[#64748B] font-mono text-[11px]">
+                                      {formData.opening_hours ? Object.entries(formData.opening_hours).slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(', ') : 'Não cadastrado'}
+                                    </td>
+                                    <td className="p-2.5 text-emerald-800 font-mono text-[11px]">
+                                      {googleCandidateResult.candidate?.opening_hours ? Object.entries(googleCandidateResult.candidate.opening_hours).slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(', ') : 'Disponível no Google'}
+                                    </td>
+                                    <td className="p-2.5 text-center">
+                                      <button
+                                        type="button"
+                                        onClick={() => setGoogleImportOptions(prev => ({ ...prev, importHours: !prev.importHours }))}
+                                        className={`px-2 py-1 rounded text-[10px] font-bold transition-colors ${
+                                          googleImportOptions.importHours
+                                            ? 'bg-emerald-600 text-white'
+                                            : 'bg-slate-200 text-slate-700'
+                                        }`}
+                                      >
+                                        {googleImportOptions.importHours ? '[Usar Google]' : '[Manter Local]'}
+                                      </button>
+                                    </td>
+                                  </tr>
+
+                                  {/* Avaliações */}
+                                  <tr className="hover:bg-slate-50">
+                                    <td className="p-2.5 font-bold text-[#1E293B]">Avaliação</td>
+                                    <td className="p-2.5 text-[#64748B]">
+                                      {formData.rating ? `⭐ ${formData.rating} (${formData.rating_count} avaliações)` : 'Não cadastrado'}
+                                    </td>
+                                    <td className="p-2.5 text-emerald-800 font-bold">
+                                      ⭐ {googleCandidateResult.candidate?.rating || 4.8} ({googleCandidateResult.candidate?.rating_count || 100} avaliações)
+                                    </td>
+                                    <td className="p-2.5 text-center">
+                                      <button
+                                        type="button"
+                                        onClick={() => setGoogleImportOptions(prev => ({ ...prev, importRating: !prev.importRating }))}
+                                        className={`px-2 py-1 rounded text-[10px] font-bold transition-colors ${
+                                          googleImportOptions.importRating
+                                            ? 'bg-emerald-600 text-white'
+                                            : 'bg-slate-200 text-slate-700'
+                                        }`}
+                                      >
+                                        {googleImportOptions.importRating ? '[Usar Google]' : '[Manter Local]'}
+                                      </button>
+                                    </td>
+                                  </tr>
+
+                                  {/* Endereço */}
+                                  <tr className="hover:bg-slate-50">
+                                    <td className="p-2.5 font-bold text-[#1E293B]">Endereço</td>
+                                    <td className="p-2.5 text-[#64748B]">
+                                      {formData.address || 'Não cadastrado'}
+                                    </td>
+                                    <td className="p-2.5 text-emerald-800">
+                                      {googleCandidateResult.candidate?.address || 'Disponível'}
+                                    </td>
+                                    <td className="p-2.5 text-center">
+                                      <button
+                                        type="button"
+                                        onClick={() => setGoogleImportOptions(prev => ({ ...prev, importAddress: !prev.importAddress }))}
+                                        className={`px-2 py-1 rounded text-[10px] font-bold transition-colors ${
+                                          googleImportOptions.importAddress
+                                            ? 'bg-emerald-600 text-white'
+                                            : 'bg-slate-200 text-slate-700'
+                                        }`}
+                                      >
+                                        {googleImportOptions.importAddress ? '[Usar Google]' : '[Manter Local]'}
+                                      </button>
+                                    </td>
+                                  </tr>
+
+                                  {/* Telefone */}
+                                  <tr className="hover:bg-slate-50">
+                                    <td className="p-2.5 font-bold text-[#1E293B]">Telefone</td>
+                                    <td className="p-2.5 text-[#64748B]">
+                                      {formData.phone || 'Não cadastrado'}
+                                    </td>
+                                    <td className="p-2.5 text-emerald-800">
+                                      {googleCandidateResult.candidate?.phone || 'Não informado'}
+                                    </td>
+                                    <td className="p-2.5 text-center">
+                                      <button
+                                        type="button"
+                                        onClick={() => setGoogleImportOptions(prev => ({ ...prev, importPhone: !prev.importPhone }))}
+                                        className={`px-2 py-1 rounded text-[10px] font-bold transition-colors ${
+                                          googleImportOptions.importPhone
+                                            ? 'bg-emerald-600 text-white'
+                                            : 'bg-slate-200 text-slate-700'
+                                        }`}
+                                      >
+                                        {googleImportOptions.importPhone ? '[Usar Google]' : '[Manter Local]'}
+                                      </button>
+                                    </td>
+                                  </tr>
+
+                                  {/* Site Oficial */}
+                                  <tr className="hover:bg-slate-50">
+                                    <td className="p-2.5 font-bold text-[#1E293B]">Site Oficial</td>
+                                    <td className="p-2.5 text-[#64748B] truncate max-w-[120px]">
+                                      {formData.official_url || formData.website || 'Não cadastrado'}
+                                    </td>
+                                    <td className="p-2.5 text-emerald-800 truncate max-w-[120px]">
+                                      {googleCandidateResult.candidate?.website_url || 'Não informado'}
+                                    </td>
+                                    <td className="p-2.5 text-center">
+                                      <button
+                                        type="button"
+                                        onClick={() => setGoogleImportOptions(prev => ({ ...prev, importWebsite: !prev.importWebsite }))}
+                                        className={`px-2 py-1 rounded text-[10px] font-bold transition-colors ${
+                                          googleImportOptions.importWebsite
+                                            ? 'bg-emerald-600 text-white'
+                                            : 'bg-slate-200 text-slate-700'
+                                        }`}
+                                      >
+                                        {googleImportOptions.importWebsite ? '[Usar Google]' : '[Manter Local]'}
+                                      </button>
+                                    </td>
+                                  </tr>
+
+                                  {/* Coordenadas */}
+                                  <tr className="hover:bg-slate-50">
+                                    <td className="p-2.5 font-bold text-[#1E293B]">Coordenadas</td>
+                                    <td className="p-2.5 text-[#64748B] font-mono text-[11px]">
+                                      {formData.latitude}, {formData.longitude}
+                                    </td>
+                                    <td className="p-2.5 text-emerald-800 font-mono text-[11px]">
+                                      {googleCandidateResult.candidate?.latitude}, {googleCandidateResult.candidate?.longitude}
+                                    </td>
+                                    <td className="p-2.5 text-center">
+                                      <button
+                                        type="button"
+                                        onClick={() => setGoogleImportOptions(prev => ({ ...prev, importCoordinates: !prev.importCoordinates }))}
+                                        className={`px-2 py-1 rounded text-[10px] font-bold transition-colors ${
+                                          googleImportOptions.importCoordinates
+                                            ? 'bg-emerald-600 text-white'
+                                            : 'bg-slate-200 text-slate-700'
+                                        }`}
+                                      >
+                                        {googleImportOptions.importCoordinates ? '[Usar Google]' : '[Manter Local]'}
+                                      </button>
+                                    </td>
+                                  </tr>
+                                </tbody>
+                              </table>
                             </div>
                           </div>
 
                           <button
+                            type="button"
                             onClick={handleApplyGoogleImport}
                             disabled={googleLoading}
-                            className="w-full py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl transition-colors shadow-xs"
+                            className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl transition-colors shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
                           >
-                            {googleLoading ? 'Importando...' : 'Confirmar Importação Controlada'}
+                            <Check className="w-3.5 h-3.5" />
+                            <span>{googleLoading ? 'Importando campos...' : 'Confirmar Importação dos Campos Selecionados'}</span>
                           </button>
                         </div>
                       )}

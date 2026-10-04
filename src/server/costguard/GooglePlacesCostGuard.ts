@@ -6,52 +6,112 @@ export interface GooglePlacesCallRecord {
   timestamp: string;
   cache_hit: boolean;
   place_id?: string;
-  estimated_cost_brl: number;
+  place_name?: string;
+  estimated_cost_brl: number | null;
+  cost_label?: string;
   success: boolean;
   error?: string;
+  status_code?: number;
 }
 
 export interface GooglePlacesCostGuardConfig {
   enabled: boolean;
+  importEnabled: boolean;
+  photosEnabled: boolean;
   dailyRequestLimit: number;
   monthlyRequestLimit: number;
   dailyBudgetBrl: number;
   monthlyBudgetBrl: number;
+  dailyEnrichmentLimit: number;
 }
 
+export interface GooglePlacesPricingItem {
+  sku: string;
+  name: string;
+  costBrl: number | null; // null represents "Custo não configurado"
+  description: string;
+}
+
+export const OFFICIAL_PLACES_PRICING: Record<string, GooglePlacesPricingItem> = {
+  TextSearch_New: {
+    sku: 'TextSearch_New',
+    name: 'Places Text Search (New)',
+    costBrl: 0.18,
+    description: 'Resolução de candidatos por texto com FieldMask cirúrgico'
+  },
+  PlaceDetails_Essentials: {
+    sku: 'PlaceDetails_Essentials',
+    name: 'Place Details - Essentials (New)',
+    costBrl: 0.04,
+    description: 'Dados básicos: ID, Nome, Endereço formatado, Coordenadas, Types'
+  },
+  PlaceDetails_Atmosphere_Contact: {
+    sku: 'PlaceDetails_Atmosphere_Contact',
+    name: 'Place Details - Atmosphere/Contact (New)',
+    costBrl: 0.12,
+    description: 'Horários de funcionamento, Avaliação, Telefone, Site Oficial'
+  },
+  PlacePhotos_New: {
+    sku: 'PlacePhotos_New',
+    name: 'Place Photos (New)',
+    costBrl: 0.04,
+    description: 'Download e referência de fotos da Google Places API (atualmente desativado)'
+  }
+};
+
 export interface GooglePlacesCostMetrics {
-  status: 'CONNECTED' | 'CONFIGURATION_REQUIRED' | 'DISABLED' | 'ERROR';
+  status: 'CONNECTED' | 'CONFIGURATION_REQUIRED' | 'DISABLED' | 'BLOCKED_BY_COST_GUARD' | 'ERROR';
+  statusDisplay: 'DESATIVADO' | 'ATIVO' | 'BLOQUEADO PELO COST GUARD' | 'AGUARDANDO CONFIGURAÇÃO' | 'ERRO';
   provider: 'GooglePlacesNew';
+  apiKeyConfigured: boolean;
   enabled: boolean;
+  importEnabled: boolean;
+  photosEnabled: boolean;
   callsToday: number;
   callsMonth: number;
   cacheHits: number;
   cacheHitRate: string;
+  callsAvoidedByCache: number;
   estimatedCostTodayBrl: number;
   estimatedCostMonthBrl: number;
+  remainingDailyBudgetBrl: number;
+  remainingMonthlyBudgetBrl: number;
   dailyLimit: number;
   monthlyLimit: number;
   dailyBudgetBrl: number;
   monthlyBudgetBrl: number;
+  dailyEnrichmentLimit: number;
+  enrichedPlacesToday: number;
+  lastCallAt: string | null;
   lastSyncAt: string | null;
+  lastPlaceConsulted: string | null;
   lastErrorSanitized: string | null;
+  errorsCount: number;
+  pricingTable: Record<string, GooglePlacesPricingItem>;
 }
 
 export class GooglePlacesCostGuard {
   private config: GooglePlacesCostGuardConfig;
+  private pricingTable: Record<string, GooglePlacesPricingItem>;
   private calls: GooglePlacesCallRecord[] = [];
+  private lastCallAt: string | null = null;
   private lastSyncAt: string | null = null;
+  private lastPlaceConsulted: string | null = null;
   private lastError: string | null = null;
 
   constructor(customConfig?: Partial<GooglePlacesCostGuardConfig>) {
     this.config = {
       enabled: process.env.GOOGLE_PLACES_ENABLED === 'true',
+      importEnabled: process.env.GOOGLE_PLACES_IMPORT_ENABLED === 'true',
+      photosEnabled: process.env.GOOGLE_PLACES_PHOTOS_ENABLED === 'true',
       dailyRequestLimit: Number(process.env.GOOGLE_PLACES_DAILY_REQUEST_LIMIT || 50),
       monthlyRequestLimit: Number(process.env.GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT || 500),
       dailyBudgetBrl: Number(process.env.GOOGLE_PLACES_DAILY_BUDGET_BRL || 10.00),
       monthlyBudgetBrl: Number(process.env.GOOGLE_PLACES_MONTHLY_BUDGET_BRL || 100.00),
+      dailyEnrichmentLimit: Number(process.env.GOOGLE_PLACES_DAILY_ENRICHMENT_LIMIT || 20),
       ...customConfig
     };
+    this.pricingTable = { ...OFFICIAL_PLACES_PRICING };
   }
 
   getConfig(): GooglePlacesCostGuardConfig {
@@ -63,34 +123,75 @@ export class GooglePlacesCostGuard {
     return { ...this.config };
   }
 
+  getPricingTable(): Record<string, GooglePlacesPricingItem> {
+    return { ...this.pricingTable };
+  }
+
+  updatePricingItem(sku: string, costBrl: number | null): GooglePlacesPricingItem | null {
+    if (!this.pricingTable[sku]) return null;
+    this.pricingTable[sku] = {
+      ...this.pricingTable[sku],
+      costBrl: costBrl === null ? null : Number(costBrl)
+    };
+    return this.pricingTable[sku];
+  }
+
   /**
    * Estimates cost in BRL for Google Places (New) operations based on FieldMask and SKU.
+   * Requirement 11: If cost is not configured, displays "Custo não configurado" without inventing a price.
    */
-  estimateOperationCost(operation: string, fieldMask?: string): { sku: string; costBrl: number } {
+  estimateOperationCost(operation: string, fieldMask?: string): { sku: string; costBrl: number | null; label: string } {
+    let item: GooglePlacesPricingItem | undefined;
+
     if (operation === 'searchText') {
-      return { sku: 'TextSearch_New', costBrl: 0.18 };
-    }
-    if (operation === 'getPlaceDetails') {
+      item = this.pricingTable.TextSearch_New;
+    } else if (operation === 'getPlaceDetails') {
       const mask = fieldMask || '';
-      if (mask.includes('regularOpeningHours') || mask.includes('rating') || mask.includes('nationalPhoneNumber')) {
-        return { sku: 'PlaceDetails_Atmosphere_Contact', costBrl: 0.12 };
+      if (mask.includes('regularOpeningHours') || mask.includes('rating') || mask.includes('nationalPhoneNumber') || mask.includes('websiteUri')) {
+        item = this.pricingTable.PlaceDetails_Atmosphere_Contact;
+      } else {
+        item = this.pricingTable.PlaceDetails_Essentials;
       }
-      return { sku: 'PlaceDetails_Essentials', costBrl: 0.04 };
+    } else if (operation === 'getPhoto') {
+      item = this.pricingTable.PlacePhotos_New;
     }
-    if (operation === 'getPhoto') {
-      return { sku: 'PlacePhotos_New', costBrl: 0.04 };
+
+    if (!item || item.costBrl === null || item.costBrl === undefined) {
+      return {
+        sku: item?.sku || 'Place_Unknown',
+        costBrl: null,
+        label: 'Custo não configurado'
+      };
     }
-    return { sku: 'Place_Basic', costBrl: 0.05 };
+
+    return {
+      sku: item.sku,
+      costBrl: item.costBrl,
+      label: `R$ ${item.costBrl.toFixed(2)} (${item.name})`
+    };
   }
 
   /**
    * Evaluates if a request is authorized under the Cost Guard policies.
+   * Requirement 4: Checks daily requests, monthly requests, daily budget, monthly budget,
+   * enriched places count, endpoint type, and surgical FieldMask.
+   * Always BLOCKS when a limit is reached, never just warns.
    */
   canMakeRequest(
     operation: string, 
     fieldMask?: string, 
-    apiKeyAvailable: boolean = true
+    apiKeyAvailable: boolean = true,
+    options?: { isImport?: boolean; isPhoto?: boolean }
   ): { allowed: boolean; reason?: string } {
+    // 1. Surgical FieldMask validation: Wildcards (*) or empty masks are strictly forbidden (Req 5)
+    if (fieldMask && (fieldMask.includes('*') || fieldMask.trim() === '')) {
+      return {
+        allowed: false,
+        reason: 'INVALID_FIELD_MASK: FieldMask "*" ou curingas são estritamente proibidos pelo Cost Guard. Solicite apenas campos cirúrgicos.'
+      };
+    }
+
+    // 2. Main switch: GOOGLE_PLACES_ENABLED (Req 3)
     if (!this.config.enabled) {
       return {
         allowed: false,
@@ -98,6 +199,23 @@ export class GooglePlacesCostGuard {
       };
     }
 
+    // 3. Sub-feature switch: Automatic/Unattended Import (Req 3)
+    if (options?.isImport && !this.config.importEnabled) {
+      return {
+        allowed: false,
+        reason: 'GOOGLE_PLACES_IMPORT_DISABLED: A importação de locais está desativada (GOOGLE_PLACES_IMPORT_ENABLED=false).'
+      };
+    }
+
+    // 4. Sub-feature switch: Photos (Req 3 & Req 12)
+    if ((options?.isPhoto || operation === 'getPhoto' || fieldMask?.includes('photos')) && !this.config.photosEnabled) {
+      return {
+        allowed: false,
+        reason: 'GOOGLE_PLACES_PHOTOS_DISABLED: O download de fotos do Google Places está desativado (GOOGLE_PLACES_PHOTOS_ENABLED=false).'
+      };
+    }
+
+    // 5. Server-side API Key check (Req 14)
     if (!apiKeyAvailable) {
       return {
         allowed: false,
@@ -105,9 +223,11 @@ export class GooglePlacesCostGuard {
       };
     }
 
+    // 6. Quota and Budget checks (Req 4)
     const { costBrl } = this.estimateOperationCost(operation, fieldMask);
-    const metrics = this.getMetrics();
+    const metrics = this.getMetrics(apiKeyAvailable);
 
+    // Limit on daily requests
     if (metrics.callsToday >= this.config.dailyRequestLimit) {
       return {
         allowed: false,
@@ -115,6 +235,7 @@ export class GooglePlacesCostGuard {
       };
     }
 
+    // Limit on monthly requests
     if (metrics.callsMonth >= this.config.monthlyRequestLimit) {
       return {
         allowed: false,
@@ -122,18 +243,30 @@ export class GooglePlacesCostGuard {
       };
     }
 
-    if (metrics.estimatedCostTodayBrl + costBrl > this.config.dailyBudgetBrl) {
+    // Limit on daily enriched places (if operation is import/enrichment)
+    if (options?.isImport && metrics.enrichedPlacesToday >= this.config.dailyEnrichmentLimit) {
       return {
         allowed: false,
-        reason: `DAILY_BUDGET_EXCEEDED: Orçamento diário (R$ ${this.config.dailyBudgetBrl.toFixed(2)}) atingido.`
+        reason: `DAILY_ENRICHMENT_LIMIT_EXCEEDED: Limite diário de locais enriquecidos (${this.config.dailyEnrichmentLimit}) atingido.`
       };
     }
 
-    if (metrics.estimatedCostMonthBrl + costBrl > this.config.monthlyBudgetBrl) {
-      return {
-        allowed: false,
-        reason: `MONTHLY_BUDGET_EXCEEDED: Orçamento mensal (R$ ${this.config.monthlyBudgetBrl.toFixed(2)}) atingido.`
-      };
+    // Limit on daily budget (if cost is configured)
+    if (costBrl !== null) {
+      if (metrics.estimatedCostTodayBrl + costBrl > this.config.dailyBudgetBrl) {
+        return {
+          allowed: false,
+          reason: `DAILY_BUDGET_EXCEEDED: Orçamento diário (R$ ${this.config.dailyBudgetBrl.toFixed(2)}) atingido.`
+        };
+      }
+
+      // Limit on monthly budget
+      if (metrics.estimatedCostMonthBrl + costBrl > this.config.monthlyBudgetBrl) {
+        return {
+          allowed: false,
+          reason: `MONTHLY_BUDGET_EXCEEDED: Orçamento mensal (R$ ${this.config.monthlyBudgetBrl.toFixed(2)}) atingido.`
+        };
+      }
     }
 
     return { allowed: true };
@@ -145,10 +278,17 @@ export class GooglePlacesCostGuard {
     fields: string;
     cache_hit: boolean;
     place_id?: string;
-    estimated_cost_brl: number;
+    place_name?: string;
+    estimated_cost_brl: number | null;
     success: boolean;
     error?: string;
+    status_code?: number;
   }): GooglePlacesCallRecord {
+    const costEstimate = params.cache_hit ? 0 : params.estimated_cost_brl;
+    const costLabel = costEstimate === null 
+      ? 'Custo não configurado' 
+      : `R$ ${(costEstimate || 0).toFixed(2)}`;
+
     const record: GooglePlacesCallRecord = {
       id: `call_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       endpoint: params.endpoint,
@@ -157,12 +297,20 @@ export class GooglePlacesCostGuard {
       timestamp: new Date().toISOString(),
       cache_hit: params.cache_hit,
       place_id: params.place_id,
-      estimated_cost_brl: params.cache_hit ? 0 : params.estimated_cost_brl,
+      place_name: params.place_name,
+      estimated_cost_brl: costEstimate,
+      cost_label: costLabel,
       success: params.success,
-      error: params.error ? sanitizeError(params.error) : undefined
+      error: params.error ? sanitizeError(params.error) : undefined,
+      status_code: params.status_code
     };
 
     this.calls.push(record);
+    this.lastCallAt = record.timestamp;
+
+    if (params.place_name || params.place_id) {
+      this.lastPlaceConsulted = params.place_name || params.place_id || null;
+    }
 
     if (params.success && !params.cache_hit) {
       this.lastSyncAt = record.timestamp;
@@ -174,6 +322,10 @@ export class GooglePlacesCostGuard {
     return record;
   }
 
+  getAuditRecords(limit: number = 50): GooglePlacesCallRecord[] {
+    return [...this.calls].reverse().slice(0, limit);
+  }
+
   getMetrics(apiKeyAvailable: boolean = true): GooglePlacesCostMetrics {
     const todayStr = new Date().toISOString().substring(0, 10);
     const monthStr = new Date().toISOString().substring(0, 7);
@@ -182,54 +334,98 @@ export class GooglePlacesCostGuard {
     const monthCalls = this.calls.filter(c => c.timestamp.startsWith(monthStr) && !c.cache_hit);
     const cacheHitsTotal = this.calls.filter(c => c.cache_hit).length;
     const totalCalls = this.calls.length;
+    const errorsCount = this.calls.filter(c => !c.success).length;
 
-    const estimatedCostTodayBrl = todayCalls.reduce((sum, c) => sum + c.estimated_cost_brl, 0);
-    const estimatedCostMonthBrl = monthCalls.reduce((sum, c) => sum + c.estimated_cost_brl, 0);
+    // Enriched places (imports) today
+    const enrichedPlacesToday = this.calls.filter(c => 
+      c.timestamp.startsWith(todayStr) && 
+      (c.endpoint.includes('import') || c.endpoint.includes('enrich')) && 
+      c.success
+    ).length;
+
+    const estimatedCostTodayBrl = todayCalls.reduce((sum, c) => sum + (c.estimated_cost_brl || 0), 0);
+    const estimatedCostMonthBrl = monthCalls.reduce((sum, c) => sum + (c.estimated_cost_brl || 0), 0);
 
     const hitRate = totalCalls > 0 
       ? `${Math.round((cacheHitsTotal / totalCalls) * 100)}%` 
       : '0%';
 
+    const isLimitExceeded = (
+      todayCalls.length >= this.config.dailyRequestLimit ||
+      monthCalls.length >= this.config.monthlyRequestLimit ||
+      estimatedCostTodayBrl >= this.config.dailyBudgetBrl ||
+      estimatedCostMonthBrl >= this.config.monthlyBudgetBrl ||
+      enrichedPlacesToday >= this.config.dailyEnrichmentLimit
+    );
+
     let status: GooglePlacesCostMetrics['status'] = 'DISABLED';
+    let statusDisplay: GooglePlacesCostMetrics['statusDisplay'] = 'DESATIVADO';
+
     if (!apiKeyAvailable) {
       status = 'CONFIGURATION_REQUIRED';
+      statusDisplay = 'AGUARDANDO CONFIGURAÇÃO';
     } else if (!this.config.enabled) {
       status = 'DISABLED';
+      statusDisplay = 'DESATIVADO';
+    } else if (isLimitExceeded) {
+      status = 'BLOCKED_BY_COST_GUARD';
+      statusDisplay = 'BLOQUEADO PELO COST GUARD';
     } else if (this.lastError && this.calls.length > 0 && !this.calls[this.calls.length - 1].success) {
       status = 'ERROR';
+      statusDisplay = 'ERRO';
     } else {
       status = 'CONNECTED';
+      statusDisplay = 'ATIVO';
     }
 
     return {
       status,
+      statusDisplay,
       provider: 'GooglePlacesNew',
+      apiKeyConfigured: apiKeyAvailable,
       enabled: this.config.enabled,
+      importEnabled: this.config.importEnabled,
+      photosEnabled: this.config.photosEnabled,
       callsToday: todayCalls.length,
       callsMonth: monthCalls.length,
       cacheHits: cacheHitsTotal,
       cacheHitRate: hitRate,
+      callsAvoidedByCache: cacheHitsTotal,
       estimatedCostTodayBrl: Math.round(estimatedCostTodayBrl * 100) / 100,
       estimatedCostMonthBrl: Math.round(estimatedCostMonthBrl * 100) / 100,
+      remainingDailyBudgetBrl: Math.max(0, Math.round((this.config.dailyBudgetBrl - estimatedCostTodayBrl) * 100) / 100),
+      remainingMonthlyBudgetBrl: Math.max(0, Math.round((this.config.monthlyBudgetBrl - estimatedCostMonthBrl) * 100) / 100),
       dailyLimit: this.config.dailyRequestLimit,
       monthlyLimit: this.config.monthlyRequestLimit,
       dailyBudgetBrl: this.config.dailyBudgetBrl,
       monthlyBudgetBrl: this.config.monthlyBudgetBrl,
+      dailyEnrichmentLimit: this.config.dailyEnrichmentLimit,
+      enrichedPlacesToday,
+      lastCallAt: this.lastCallAt,
       lastSyncAt: this.lastSyncAt,
-      lastErrorSanitized: this.lastError
+      lastPlaceConsulted: this.lastPlaceConsulted,
+      lastErrorSanitized: this.lastError,
+      errorsCount,
+      pricingTable: this.pricingTable
     };
   }
 
   resetForTest(): void {
     this.calls = [];
+    this.lastCallAt = null;
     this.lastSyncAt = null;
+    this.lastPlaceConsulted = null;
     this.lastError = null;
+    this.pricingTable = { ...OFFICIAL_PLACES_PRICING };
   }
 }
 
 function sanitizeError(err: string): string {
-  // Strip any accidental API keys or secrets from error output
-  return err.replace(/key=[A-Za-z0-9_-]+/gi, 'key=***');
+  // Strip any accidental API keys, tokens, or secrets from error output
+  return err
+    .replace(/key=[A-Za-z0-9_-]+/gi, 'key=***')
+    .replace(/apiKey=[A-Za-z0-9_-]+/gi, 'apiKey=***')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer ***');
 }
 
 export const googlePlacesCostGuard = new GooglePlacesCostGuard();

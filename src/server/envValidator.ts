@@ -16,8 +16,10 @@ export interface ValidatedEnv {
   APP_PUBLIC_URL: string;
   PUBLIC_APP_ORIGIN: string;
   MAX_GENERATION_API_COST_BRL: number;
-  // Sprint 10A Cost Guard
+  // Sprint 10A & 10B Cost Guard
   GOOGLE_PLACES_ENABLED: boolean;
+  GOOGLE_PLACES_IMPORT_ENABLED: boolean;
+  GOOGLE_PLACES_PHOTOS_ENABLED: boolean;
   GOOGLE_PLACES_DAILY_REQUEST_LIMIT: number;
   GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT: number;
   GOOGLE_PLACES_DAILY_BUDGET_BRL: number;
@@ -84,6 +86,8 @@ export function validateServerEnv(): ValidatedEnv {
     PUBLIC_APP_ORIGIN: process.env.PUBLIC_APP_ORIGIN || 'https://roteiro.duo21.com.br',
     MAX_GENERATION_API_COST_BRL: isNaN(maxCost) ? 1.00 : maxCost,
     GOOGLE_PLACES_ENABLED: process.env.GOOGLE_PLACES_ENABLED === 'true',
+    GOOGLE_PLACES_IMPORT_ENABLED: process.env.GOOGLE_PLACES_IMPORT_ENABLED === 'true',
+    GOOGLE_PLACES_PHOTOS_ENABLED: process.env.GOOGLE_PLACES_PHOTOS_ENABLED === 'true',
     GOOGLE_PLACES_DAILY_REQUEST_LIMIT: Number(process.env.GOOGLE_PLACES_DAILY_REQUEST_LIMIT || 50),
     GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT: Number(process.env.GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT || 500),
     GOOGLE_PLACES_DAILY_BUDGET_BRL: Number(process.env.GOOGLE_PLACES_DAILY_BUDGET_BRL || 10.00),
