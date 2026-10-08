@@ -32,6 +32,21 @@ export interface GooglePlacesPricingItem {
   name: string;
   costBrl: number | null; // null represents "Custo não configurado"
   description: string;
+  officialMonthlyFreeTier: number; // Google Cloud official monthly free tier (e.g. 5,000 for Essentials, 1,000 for Atmosphere, etc.)
+  monthlyUsageCount?: number;
+  remainingFreeTier?: number;
+}
+
+export interface SkuUsageSummary {
+  sku: string;
+  name: string;
+  costBrl: number | null;
+  officialMonthlyFreeTier: number;
+  callsMonth: number;
+  remainingFreeTier: number;
+  callsToday: number;
+  estimatedCostMonthBrl: number;
+  status: 'WITHIN_FREE_TIER' | 'CHARGED' | 'UNKNOWN';
 }
 
 export const OFFICIAL_PLACES_PRICING: Record<string, GooglePlacesPricingItem> = {
@@ -39,25 +54,29 @@ export const OFFICIAL_PLACES_PRICING: Record<string, GooglePlacesPricingItem> = 
     sku: 'TextSearch_New',
     name: 'Places Text Search (New)',
     costBrl: 0.18,
-    description: 'Resolução de candidatos por texto com FieldMask cirúrgico'
+    description: 'Resolução de candidatos por texto com FieldMask cirúrgico',
+    officialMonthlyFreeTier: 1000 // Tier de cortesia estimado para buscas de texto
   },
   PlaceDetails_Essentials: {
     sku: 'PlaceDetails_Essentials',
     name: 'Place Details - Essentials (New)',
     costBrl: 0.04,
-    description: 'Dados básicos: ID, Nome, Endereço formatado, Coordenadas, Types'
+    description: 'Dados básicos: ID, Nome, Endereço formatado, Coordenadas, Types',
+    officialMonthlyFreeTier: 5000 // Google Maps Platform Essentials tier
   },
   PlaceDetails_Atmosphere_Contact: {
     sku: 'PlaceDetails_Atmosphere_Contact',
     name: 'Place Details - Atmosphere/Contact (New)',
     costBrl: 0.12,
-    description: 'Horários de funcionamento, Avaliação, Telefone, Site Oficial'
+    description: 'Horários de funcionamento, Avaliação, Telefone, Site Oficial',
+    officialMonthlyFreeTier: 1000
   },
   PlacePhotos_New: {
     sku: 'PlacePhotos_New',
     name: 'Place Photos (New)',
     costBrl: 0.04,
-    description: 'Download e referência de fotos da Google Places API (atualmente desativado)'
+    description: 'Download e referência de fotos da Google Places API (atualmente desativado)',
+    officialMonthlyFreeTier: 1000
   }
 };
 
@@ -90,6 +109,7 @@ export interface GooglePlacesCostMetrics {
   lastErrorSanitized: string | null;
   errorsCount: number;
   pricingTable: Record<string, GooglePlacesPricingItem>;
+  skuBreakdown: Record<string, SkuUsageSummary>;
 }
 
 export class GooglePlacesCostGuard {
@@ -423,6 +443,27 @@ export class GooglePlacesCostGuard {
       statusDisplay = 'ATIVO';
     }
 
+    const skuBreakdown: Record<string, SkuUsageSummary> = {};
+    for (const [skuKey, pricing] of Object.entries(this.pricingTable)) {
+      const callsForSkuMonth = monthCalls.filter(c => c.sku === pricing.sku).length;
+      const callsForSkuToday = todayCalls.filter(c => c.sku === pricing.sku).length;
+      const freeTier = pricing.officialMonthlyFreeTier || 1000;
+      const remainingFree = Math.max(0, freeTier - callsForSkuMonth);
+      const estCost = callsForSkuMonth * (pricing.costBrl || 0);
+
+      skuBreakdown[skuKey] = {
+        sku: pricing.sku,
+        name: pricing.name,
+        costBrl: pricing.costBrl,
+        officialMonthlyFreeTier: freeTier,
+        callsMonth: callsForSkuMonth,
+        remainingFreeTier: remainingFree,
+        callsToday: callsForSkuToday,
+        estimatedCostMonthBrl: Math.round(estCost * 100) / 100,
+        status: callsForSkuMonth <= freeTier ? 'WITHIN_FREE_TIER' : 'CHARGED'
+      };
+    }
+
     return {
       status,
       statusDisplay,
@@ -451,7 +492,8 @@ export class GooglePlacesCostGuard {
       lastPlaceConsulted: this.lastPlaceConsulted,
       lastErrorSanitized: this.lastError,
       errorsCount,
-      pricingTable: this.pricingTable
+      pricingTable: this.pricingTable,
+      skuBreakdown
     };
   }
 

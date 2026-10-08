@@ -40,13 +40,15 @@ import {
   Star,
   Lock,
   Shield,
-  Download
+  Download,
+  Rocket
 } from 'lucide-react';
 import { Place, SerraEvent, UserReport, AdminMetrics } from '../types';
 import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
 import { EngineWeights, DEFAULT_WEIGHTS } from '../services/itineraryEngine';
 import { providerRegistry, RegisteredProviderStatus } from '../services/providers';
 import { PlaceEditorModal } from './PlaceEditorModal';
+import { CatalogAcceleratorModal } from './CatalogAcceleratorModal';
 import { calculatePlaceDataQuality } from '../utils/dataQuality';
 import { hasDivulgaContent } from '../utils/formatters';
 
@@ -136,6 +138,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [costGuardUpdating, setCostGuardUpdating] = useState(false);
   const [costGuardAuditRecords, setCostGuardAuditRecords] = useState<any[]>([]);
   const [showMiniMundoModal, setShowMiniMundoModal] = useState(false);
+  const [showAcceleratorModal, setShowAcceleratorModal] = useState(false);
   const [miniMundoTestResult, setMiniMundoTestResult] = useState<any>(null);
   const [isTestingMiniMundo, setIsTestingMiniMundo] = useState(false);
   const isSubmittingMiniMundoRef = React.useRef(false);
@@ -1399,7 +1402,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <button
                     onClick={fetchPlacesAndMetrics}
                     disabled={isLoadingPlaces}
-                    className="p-2 bg-slate-100 hover:bg-slate-200 text-[#1E293B] text-xs font-bold rounded-xl transition-colors flex items-center gap-1"
+                    className="p-2 bg-slate-100 hover:bg-slate-200 text-[#1E293B] text-xs font-bold rounded-xl transition-colors flex items-center gap-1 cursor-pointer"
                     title="Recarregar locais do banco"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isLoadingPlaces ? 'animate-spin' : ''}`} />
@@ -1407,8 +1410,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </button>
 
                   <button
+                    type="button"
+                    onClick={() => setShowAcceleratorModal(true)}
+                    className="px-3.5 py-2 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold rounded-xl transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Rocket className="w-3.5 h-3.5 text-emerald-300" />
+                    <span>Acelerador (Meta 150)</span>
+                  </button>
+
+                  <button
                     onClick={handleCreateNewPlace}
-                    className="px-4 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl transition-colors shadow-xs flex items-center gap-1.5"
+                    className="px-3.5 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>+ Novo Local</span>
@@ -1451,6 +1463,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <p className="text-xs text-[#64748B]">
                     Arquitetura <strong>Cache-First e Supabase-First</strong>. Chamadas externas ocorrem estritamente sob demanda na curadoria administrativa. Limite diário: {costGuardMetrics.callsToday}/{costGuardMetrics.dailyLimit} reqs (Orçamento R$ {costGuardMetrics.dailyBudgetBrl.toFixed(2)}/dia).
                   </p>
+
+                  {/* Detalhamento por SKU & Franquia Mensal Gratuita (Sprint 10D Requisito 4) */}
+                  {costGuardMetrics.skuBreakdown && (
+                    <div className="pt-2 border-t border-[#E2D5BE]/60 space-y-1.5">
+                      <span className="text-[10px] font-extrabold text-[#1B4332] uppercase tracking-wider block">
+                        Auditoria de SKUs & Franquia Mensal Oficial (Google Maps Platform)
+                      </span>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {Object.values(costGuardMetrics.skuBreakdown as Record<string, any>).map((skuItem: any) => (
+                          <div key={skuItem.sku} className="p-2 bg-white/80 rounded-xl border border-[#E2D5BE] text-[11px] space-y-0.5">
+                            <div className="flex items-center justify-between">
+                              <strong className="text-[#1E293B] font-bold truncate">{skuItem.name}</strong>
+                              <span className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded ${
+                                skuItem.status === 'WITHIN_FREE_TIER' 
+                                  ? 'bg-emerald-100 text-emerald-800' 
+                                  : 'bg-amber-100 text-amber-800'
+                              }`}>
+                                {skuItem.status === 'WITHIN_FREE_TIER' ? 'GRÁTIS' : 'PAGO'}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-[#64748B] flex justify-between">
+                              <span>Mês: {skuItem.callsMonth} reqs</span>
+                              <span>Franquia: {skuItem.officialMonthlyFreeTier.toLocaleString('pt-BR')}</span>
+                            </div>
+                            <div className="text-[10px] text-[#64748B] flex justify-between">
+                              <span>Restante: {skuItem.remainingFreeTier.toLocaleString('pt-BR')}</span>
+                              <span className="font-bold text-[#1B4332]">
+                                {skuItem.costBrl ? `R$ ${(skuItem.costBrl * skuItem.callsMonth).toFixed(2)}` : 'R$ 0,00'}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -2662,6 +2709,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         onSave={handleSavePlace}
         adminApiKey={adminApiKey}
         adminSessionToken={adminSessionToken}
+      />
+
+      {/* Catalog Accelerator Modal (Sprint 10D: Meta 150 Locais & Descoberta em Lote) */}
+      <CatalogAcceleratorModal
+        isOpen={showAcceleratorModal}
+        onClose={() => setShowAcceleratorModal(false)}
+        onRefreshCatalog={fetchPlacesAndMetrics}
+        adminApiKey={adminApiKey}
       />
     </div>
   );

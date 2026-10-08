@@ -9,6 +9,7 @@ import {
   DEFAULT_RESOLUTION_RADIUS_METERS,
   PlaceCandidateDTO
 } from '../../services/places/SmartPlaceResolver';
+import { CATALOG_ACCELERATOR_FIXTURES } from './MockCatalogSeed';
 
 export interface LocationBiasCircle {
   center: { latitude: number; longitude: number };
@@ -603,6 +604,19 @@ export class GooglePlacesServerProvider {
     for (const [key, place] of Object.entries(MOCK_PLACES_CATALOG)) {
       if (q.includes(key) || key.includes(q) || (key.startsWith('lago negro') && q.includes('lago negro'))) {
         matched.push({ ...place });
+      }
+    }
+
+    // Busca nas fixtures do Catalog Accelerator (Sprint 10D)
+    for (const fixture of CATALOG_ACCELERATOR_FIXTURES) {
+      const nameMatch = q.includes(fixture.name.toLowerCase()) || fixture.name.toLowerCase().includes(q);
+      const catMatch = fixture.category && q.includes(fixture.category.toLowerCase());
+      const cityMatch = fixture.city && q.includes(fixture.city.toLowerCase());
+      
+      if (nameMatch || (catMatch && cityMatch)) {
+        if (!matched.some(m => m.externalId === fixture.externalId)) {
+          matched.push({ ...fixture });
+        }
       }
     }
 

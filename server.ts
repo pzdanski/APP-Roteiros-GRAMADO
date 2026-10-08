@@ -22,6 +22,7 @@ import { SEED_PLACES } from './src/data/seedData';
 import { DEFAULT_WEIGHTS } from './src/services/itineraryEngine';
 import { Place } from './src/types';
 import { buildPlaceResolutionQuery } from './src/services/places/SmartPlaceResolver';
+import { catalogAcceleratorService } from './src/server/places/CatalogAcceleratorService';
 import { parseBudgetFromNaturalText } from './src/services/ai/heuristicParser';
 import { rateLimitService } from './src/server/security/RateLimitService';
 import { singleFlight } from './src/server/cache/SingleFlight';
@@ -2242,6 +2243,92 @@ ${JSON.stringify(context || {})}`;
       res.json({ success: true, place: updated });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Sprint 10D & 10D.1: Catalog Accelerator Endpoints (Target 50 -> 150 -> 200, Microlots, SKUs, Checkpoints)
+  app.get('/api/admin/accelerator/status', requireAdmin, async (_req, res) => {
+    try {
+      const status = await catalogAcceleratorService.getAcceleratorStatus();
+      res.json(status);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao obter status do acelerador.' });
+    }
+  });
+
+  // Legado / compatibilidade com progress
+  app.get('/api/admin/accelerator/progress', requireAdmin, async (_req, res) => {
+    try {
+      const status = await catalogAcceleratorService.getAcceleratorStatus();
+      res.json({
+        total: {
+          current: status.currentCount,
+          target: status.phase2.targetTotal,
+          needed: status.phase2.neededTotal
+        },
+        byCity: status.phase2.byCity,
+        breakdown: {
+          active: status.currentCount,
+          incomplete: 0,
+          withGooglePlaceId: status.currentCount,
+          duplicatesIdentified: status.executionState.duplicatesAvoidedTotal
+        }
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao obter progresso.' });
+    }
+  });
+
+  app.post('/api/admin/accelerator/authorize-phase', requireAdmin, async (req, res) => {
+    try {
+      const { phase } = req.body;
+      const phaseNum = Number(phase) as 1 | 2 | 3;
+      if (![1, 2, 3].includes(phaseNum)) {
+        res.status(400).json({ error: 'Fase inválida. Escolha 1, 2 ou 3.' });
+        return;
+      }
+      const adminKey = (req.headers['x-admin-key'] as string) || '';
+      const result = await catalogAcceleratorService.authorizePhase(phaseNum, adminKey);
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Falha ao autorizar fase.' });
+    }
+  });
+
+  app.post('/api/admin/accelerator/execute-microlot', requireAdmin, async (_req, res) => {
+    try {
+      const result = await catalogAcceleratorService.executeNextMicrolot();
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Falha ao executar microlote.' });
+    }
+  });
+
+  app.post('/api/admin/accelerator/pause', requireAdmin, async (_req, res) => {
+    try {
+      const result = catalogAcceleratorService.pauseExecution();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao pausar execução.' });
+    }
+  });
+
+  app.post('/api/admin/accelerator/resume', requireAdmin, async (_req, res) => {
+    try {
+      const result = catalogAcceleratorService.resumeExecution();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao retomar execução.' });
+    }
+  });
+
+  app.post('/api/admin/accelerator/propose-limits', requireAdmin, async (req, res) => {
+    try {
+      const { approved } = req.body;
+      const updatedConfig = catalogAcceleratorService.applyProposedLimits(approved === true);
+      res.json({ success: true, config: updatedConfig });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Falha ao aplicar limites.' });
     }
   });
 
