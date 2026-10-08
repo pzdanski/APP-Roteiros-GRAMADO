@@ -122,7 +122,8 @@ export const VALID_PLACE_COLUMNS = new Set([
   'google_last_sync_at', 'google_sync_status', 'google_data_version',
   'price_notes', 'price_valid_from', 'price_valid_until',
   'data_quality_label', 'data_quality_score', 'always_open',
-  'hours_source', 'hours_last_checked_at', 'rating_source', 'rating_last_checked_at'
+  'hours_source', 'hours_last_checked_at', 'rating_source', 'rating_last_checked_at',
+  'rating', 'rating_count'
 ]);
 
 export function resolvePlaceUuid(id?: string, slug?: string): string {
@@ -213,7 +214,9 @@ export function mapRawPlaceToClientPlace(row: any): any {
     rating_source: row.rating_source || 'duo21',
     rating_last_checked_at: row.rating_last_checked_at || null,
     data_quality_label: row.data_quality_label,
-    data_quality_score: row.data_quality_score
+    data_quality_score: row.data_quality_score,
+    divulga_lugares_tip: row.divulga_lugares_tip || undefined,
+    instagram: row.instagram || ''
   };
 
   const dq = calculatePlaceDataQuality(mappedPlace);
@@ -589,6 +592,10 @@ export const supabaseServer = {
       const p = mockStore.places.find(item => item.id === realPlaceId || item.id === id);
       if (!p) return null;
       const clientPlace = mapRawPlaceToClientPlace(p);
+      const hoursRows = mockStore.hours.filter(h => h.place_id === realPlaceId);
+      if (hoursRows.length > 0) {
+        clientPlace.opening_hours = this.formatPlaceHoursToMap(hoursRows);
+      }
       if (Array.isArray(clientPlace.media)) {
         clientPlace.media = [...clientPlace.media].sort((a, b) => {
           if (a.is_hero && !b.is_hero) return -1;
@@ -618,6 +625,10 @@ export const supabaseServer = {
     const mediaItems = await this.getMediaForPlace(data.id);
     if (mediaItems.length > 0) {
       clientPlace.media = mediaItems;
+    }
+    const hoursRows = await this.getHoursForPlace(data.id);
+    if (hoursRows && hoursRows.length > 0) {
+      clientPlace.opening_hours = this.formatPlaceHoursToMap(hoursRows);
     }
     return clientPlace;
   },
@@ -706,8 +717,8 @@ export const supabaseServer = {
     const merged = { ...(existing || {}), ...updates };
     const dq = calculatePlaceDataQuality(merged);
 
-    // Extract media so it is NEVER sent to places table
-    const { media, hours, reviews, ...rawPlaceFields } = updates;
+    // Extract non-column fields so they are NEVER sent to places table
+    const { media, hours, reviews, opening_hours, ...rawPlaceFields } = updates;
 
     // If media was explicitly passed in updates, reorder/sync place_media_items
     if (Array.isArray(media)) {
@@ -1069,8 +1080,33 @@ export const supabaseServer = {
   },
 
   // ---------------------------------------------------------------------------
-  // Hours (place_hours)
+  // Hours (place_hours) — Canonical Relational Source of Truth
   // ---------------------------------------------------------------------------
+  formatPlaceHoursToMap(hoursRows: any[]): Record<string, string> {
+    const dayKeys = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
+    const map: Record<string, string> = {};
+    for (const row of hoursRows) {
+      const k = dayKeys[row.day_of_week];
+      if (!k) continue;
+      let str = '';
+      if (row.closed) {
+        str = 'Fechado';
+      } else if (row.open_time === '00:00:00' && (row.close_time === '23:59:59' || row.close_time === '24:00:00')) {
+        str = '24 horas';
+      } else if (row.open_time && row.close_time) {
+        str = `${row.open_time.slice(0, 5)} - ${row.close_time.slice(0, 5)}`;
+      }
+      if (str) {
+        if (map[k] && map[k] !== 'Fechado' && str !== 'Fechado') {
+          map[k] = `${map[k]}, ${str}`;
+        } else {
+          map[k] = str;
+        }
+      }
+    }
+    return map;
+  },
+
   async getHoursForPlace(placeId: string, date?: string): Promise<any> {
     if (env.DATA_MODE === 'mock') {
       const list = mockStore.hours.filter(h => h.place_id === placeId);
@@ -1123,6 +1159,145 @@ export const supabaseServer = {
     const { error } = await serverClient.from('place_hours').delete().eq('id', id);
     if (error) throw new Error(`DATABASE_UNAVAILABLE: ${error.message}`);
     return true;
+  },
+
+  /**
+   * Sprint 10C / Hotfix 10C.1: Persists approved Google Places hours exclusively into
+   * public.place_hours relational table. Does NOT create or update places.opening_hours.
+   * Provenance is recorded in places.hours_source and places.hours_last_checked_at.
+   */
+  async syncPlaceHours(placeId: string, hours: Record<string, string>): Promise<any> {
+    const realPlaceId = await this.resolveRealPlaceId(placeId);
+    if (!realPlaceId) throw new Error('Place not found');
+
+    // Safe Guard: Ausência de horários NÃO apaga horários existentes
+    if (!hours || typeof hours !== 'object' || Object.keys(hours).length === 0) {
+      return await this.getPlaceById(realPlaceId);
+    }
+
+    const hasAnyValidValue = Object.values(hours).some(v => typeof v === 'string' && v.trim().length > 0);
+    if (!hasAnyValidValue) {
+      return await this.getPlaceById(realPlaceId);
+    }
+
+    const now = new Date().toISOString();
+    const dayKeys = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
+
+    // Update places provenance ONLY. NEVER write opening_hours to public.places!
+    await this.updatePlace(realPlaceId, {
+      hours_source: 'google_places',
+      hours_last_checked_at: now
+    });
+
+    const rowsToInsert: any[] = [];
+    for (let dayIndex = 0; dayIndex < 7; dayIndex++) {
+      const key = dayKeys[dayIndex];
+      const val = (hours[key] || '').trim();
+      const isClosed = !val || /fechado|closed/i.test(val);
+      const isOpen24 = /24 horas|24 hours/i.test(val);
+
+      if (isClosed) {
+        rowsToInsert.push({
+          id: `h_${realPlaceId}_${dayIndex}_0`,
+          place_id: realPlaceId,
+          day_of_week: dayIndex,
+          open_time: null,
+          close_time: null,
+          closed: true,
+          confidence: 'high',
+          source_id: 'google_places',
+          checked_at: now.split('T')[0]
+        });
+      } else if (isOpen24) {
+        rowsToInsert.push({
+          id: `h_${realPlaceId}_${dayIndex}_0`,
+          place_id: realPlaceId,
+          day_of_week: dayIndex,
+          open_time: '00:00:00',
+          close_time: '23:59:59',
+          closed: false,
+          confidence: 'high',
+          source_id: 'google_places',
+          checked_at: now.split('T')[0]
+        });
+      } else {
+        // Multi-period support (e.g. 11:30 - 15:00, 18:30 - 23:00)
+        const matches = [...val.matchAll(/(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})/g)];
+        if (matches.length > 0) {
+          matches.forEach((m, periodIdx) => {
+            const openTime = `${m[1].length === 4 ? '0' + m[1] : m[1]}:00`;
+            const closeTime = `${m[2].length === 4 ? '0' + m[2] : m[2]}:00`;
+            rowsToInsert.push({
+              id: `h_${realPlaceId}_${dayIndex}_${periodIdx}`,
+              place_id: realPlaceId,
+              day_of_week: dayIndex,
+              open_time: openTime,
+              close_time: closeTime,
+              closed: false,
+              confidence: 'high',
+              source_id: 'google_places',
+              checked_at: now.split('T')[0]
+            });
+          });
+        } else {
+          rowsToInsert.push({
+            id: `h_${realPlaceId}_${dayIndex}_0`,
+            place_id: realPlaceId,
+            day_of_week: dayIndex,
+            open_time: '09:00:00',
+            close_time: '18:00:00',
+            closed: false,
+            confidence: 'high',
+            source_id: 'google_places',
+            checked_at: now.split('T')[0]
+          });
+        }
+      }
+    }
+
+    if (env.DATA_MODE === 'mock' || !serverClient) {
+      // Mock mode: safe atomic update
+      const backupHours = mockStore.hours.filter(h => h.place_id === realPlaceId);
+      try {
+        mockStore.hours = mockStore.hours.filter(h => h.place_id !== realPlaceId);
+        mockStore.hours.push(...rowsToInsert);
+      } catch (err) {
+        mockStore.hours = [...mockStore.hours.filter(h => h.place_id !== realPlaceId), ...backupHours];
+        throw err;
+      }
+      return await this.getPlaceById(realPlaceId);
+    }
+
+    // ServerClient mode: Transactional protection against partial deletion
+    const { data: previousHours } = await serverClient
+      .from('place_hours')
+      .select('*')
+      .eq('place_id', realPlaceId);
+
+    const { error: deleteError } = await serverClient
+      .from('place_hours')
+      .delete()
+      .eq('place_id', realPlaceId);
+
+    if (deleteError) {
+      console.warn('[Supabase Server] Failed to delete existing place_hours:', deleteError.message);
+      throw new Error(`DATABASE_UNAVAILABLE: Failed to delete place_hours (${deleteError.message})`);
+    }
+
+    const dbRows = rowsToInsert.map(({ id, ...rest }) => rest);
+    const { error: insertError } = await serverClient
+      .from('place_hours')
+      .insert(dbRows);
+
+    if (insertError) {
+      console.warn('[Supabase Server] Failed to insert place_hours, restoring previous hours:', insertError.message);
+      if (previousHours && previousHours.length > 0) {
+        await serverClient.from('place_hours').insert(previousHours);
+      }
+      throw new Error(`DATABASE_UNAVAILABLE: Failed to insert place_hours (${insertError.message})`);
+    }
+
+    return await this.getPlaceById(realPlaceId);
   },
 
   // ---------------------------------------------------------------------------

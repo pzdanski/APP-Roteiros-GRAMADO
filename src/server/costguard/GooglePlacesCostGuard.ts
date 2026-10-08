@@ -107,10 +107,10 @@ export class GooglePlacesCostGuard {
       enabled: customConfig?.enabled !== undefined ? customConfig.enabled : parseBooleanEnv(process.env.GOOGLE_PLACES_ENABLED),
       importEnabled: customConfig?.importEnabled !== undefined ? customConfig.importEnabled : parseBooleanEnv(process.env.GOOGLE_PLACES_IMPORT_ENABLED),
       photosEnabled: customConfig?.photosEnabled !== undefined ? customConfig.photosEnabled : parseBooleanEnv(process.env.GOOGLE_PLACES_PHOTOS_ENABLED),
-      dailyRequestLimit: Number(process.env.GOOGLE_PLACES_DAILY_REQUEST_LIMIT || 50),
+      dailyRequestLimit: Number(process.env.GOOGLE_PLACES_DAILY_REQUEST_LIMIT || 20),
       monthlyRequestLimit: Number(process.env.GOOGLE_PLACES_MONTHLY_REQUEST_LIMIT || 500),
-      dailyBudgetBrl: Number(process.env.GOOGLE_PLACES_DAILY_BUDGET_BRL || 10.00),
-      monthlyBudgetBrl: Number(process.env.GOOGLE_PLACES_MONTHLY_BUDGET_BRL || 100.00),
+      dailyBudgetBrl: Number(process.env.GOOGLE_PLACES_DAILY_BUDGET_BRL || 5.00),
+      monthlyBudgetBrl: Number(process.env.GOOGLE_PLACES_MONTHLY_BUDGET_BRL || 50.00),
       dailyEnrichmentLimit: Number(process.env.GOOGLE_PLACES_DAILY_ENRICHMENT_LIMIT || 20),
       ...customConfig
     };

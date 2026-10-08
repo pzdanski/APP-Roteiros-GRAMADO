@@ -3,6 +3,12 @@ import { supabaseServer } from '../supabaseServer';
 import { singleFlight } from '../cache/SingleFlight';
 import { externalFetch } from '../utils/externalFetch';
 import { googlePlacesCostGuard } from '../costguard/GooglePlacesCostGuard';
+import {
+  rankAndScoreCandidates,
+  buildPlaceResolutionQuery,
+  DEFAULT_RESOLUTION_RADIUS_METERS,
+  PlaceCandidateDTO
+} from '../../services/places/SmartPlaceResolver';
 
 export interface LocationBiasCircle {
   center: { latitude: number; longitude: number };
@@ -17,11 +23,12 @@ export const SERRA_GAUCHA_LOCATION_BIAS: LocationBiasCircle = {
 // Field Masks (Sprint 10A & 10B: Surgical FieldMasks only, never *)
 export const GOOGLE_FIELD_MASKS = {
   RESOLUTION_INITIAL: 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
+  SMART_RESOLUTION: 'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.userRatingCount',
   PLACE_RESOLUTION: 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
-  ENRICHMENT: 'id,displayName,formattedAddress,location,regularOpeningHours,rating,userRatingCount,websiteUri,googleMapsUri,nationalPhoneNumber',
+  ENRICHMENT: 'id,displayName,formattedAddress,location,types,regularOpeningHours,rating,userRatingCount,websiteUri,googleMapsUri,nationalPhoneNumber',
   MEDIA: 'id,displayName,photos',
   HOURS: 'id,displayName,businessStatus,regularOpeningHours',
-  DETAIL: 'id,displayName,formattedAddress,location,regularOpeningHours,rating,userRatingCount,websiteUri,googleMapsUri,nationalPhoneNumber',
+  DETAIL: 'id,displayName,formattedAddress,location,types,regularOpeningHours,rating,userRatingCount,websiteUri,googleMapsUri,nationalPhoneNumber',
   DISCOVERY: 'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.userRatingCount'
 };
 
@@ -51,11 +58,50 @@ const MOCK_PLACES_CATALOG: Record<string, ResolvedPlace> = {
   'lago negro': {
     externalId: 'ChIJQ3y-demo-lago-negro',
     name: 'Lago Negro',
-    address: 'Rua A. J. Renner, Bairro Planalto, Gramado - RS',
+    address: 'R. A. J. Renner, Bairro Planalto, Gramado - RS, 95670-000',
     latitude: -29.3888,
     longitude: -50.8808,
     city: 'Gramado',
     businessStatus: 'OPERATIONAL',
+    types: ['tourist_attraction', 'park', 'point_of_interest'],
+    rating: 4.8,
+    userRatingCount: 28450,
+    websiteUri: 'https://gramado.rs.gov.br/turismo/lago-negro',
+    googleMapsUri: 'https://maps.google.com/?cid=1029384756192837465',
+    nationalPhoneNumber: '(54) 3286-0000',
+    openingHours: {
+      'seg': 'Aberto 24 horas',
+      'ter': 'Aberto 24 horas',
+      'qua': 'Aberto 24 horas',
+      'qui': 'Aberto 24 horas',
+      'sex': 'Aberto 24 horas',
+      'sab': 'Aberto 24 horas',
+      'dom': 'Aberto 24 horas'
+    },
+    weekdayDescriptions: [
+      'segunda-feira: Aberto 24 horas',
+      'terça-feira: Aberto 24 horas',
+      'quarta-feira: Aberto 24 horas',
+      'quinta-feira: Aberto 24 horas',
+      'sexta-feira: Aberto 24 horas',
+      'sábado: Aberto 24 horas',
+      'domingo: Aberto 24 horas'
+    ],
+    provider: 'MOCK',
+    cached: false,
+    resolvedAt: new Date().toISOString()
+  },
+  'lago negro casa grande': {
+    externalId: 'ChIJ-lago-negro-casa-grande',
+    name: 'Lago Negro',
+    address: 'R. Vinte e Cinco de Julho, 439 - Casa Grande, Gramado - RS',
+    latitude: -29.3520,
+    longitude: -50.8880,
+    city: 'Gramado',
+    businessStatus: 'OPERATIONAL',
+    types: ['point_of_interest', 'establishment'],
+    rating: 4.8,
+    userRatingCount: 104,
     provider: 'MOCK',
     cached: false,
     resolvedAt: new Date().toISOString()
@@ -173,9 +219,12 @@ export class GooglePlacesServerProvider {
     }
 
     const cleanQuery = query.trim();
-    const cacheKey = `google_places:search:${cleanQuery.toLowerCase()}:${mask}`;
+    const biasPart = options.locationBias
+      ? `:${options.locationBias.center.latitude.toFixed(4)},${options.locationBias.center.longitude.toFixed(4)},${Math.round(options.locationBias.radius)}`
+      : '';
+    const cacheKey = `google_places:search:${cleanQuery.toLowerCase()}:${mask}${biasPart}`;
 
-    // 1. Check external data cache first (Section 6)
+    // 1. Check external data cache first (Section 6 & 19)
     if (!options.skipCache) {
       try {
         const cached = await supabaseServer.getCache(cacheKey);
@@ -381,8 +430,9 @@ export class GooglePlacesServerProvider {
       }
     }
 
-    // 2. Mock mode if key missing
-    if (!this.isConfigured()) {
+    // 2. Mock mode if key missing or mock key in test
+    const apiKey = this.getApiKey();
+    if (!this.isConfigured() || apiKey.startsWith('mock-')) {
       for (const p of Object.values(MOCK_PLACES_CATALOG)) {
         if (p.externalId === placeId) {
           try {
@@ -396,6 +446,24 @@ export class GooglePlacesServerProvider {
           } catch (err) {
             console.warn('[Places Cache] Cache save error in mock details:', err);
           }
+          const { sku, costBrl } = googlePlacesCostGuard.estimateOperationCost('getPlaceDetails', mask);
+          googlePlacesCostGuard.recordCall({
+            endpoint: `/places/${placeId}`,
+            sku,
+            fields: mask,
+            place_id: placeId,
+            cache_hit: false,
+            estimated_cost_brl: costBrl || 0.12,
+            success: true
+          });
+          await supabaseServer.logApiUsage({
+            trip_id: options.tripId || null,
+            provider: 'GOOGLE_PLACES',
+            operation: 'getPlaceDetails',
+            request_count: 1,
+            estimated_cost_brl: costBrl || 0.12,
+            cached: false
+          });
           return p;
         }
       }
@@ -533,7 +601,7 @@ export class GooglePlacesServerProvider {
     const matched: ResolvedPlace[] = [];
 
     for (const [key, place] of Object.entries(MOCK_PLACES_CATALOG)) {
-      if (q.includes(key) || key.includes(q)) {
+      if (q.includes(key) || key.includes(q) || (key.startsWith('lago negro') && q.includes('lago negro'))) {
         matched.push({ ...place });
       }
     }
@@ -722,26 +790,41 @@ export class GooglePlacesServerProvider {
   }
 
   /**
-   * Sprint 10B Requirement 8: Searches candidates on Google Places with surgical FieldMask.
-   * Does NOT automatically link or match; returns candidate list for administrator selection.
+   * HOTFIX P1 & Sprint 10B Requirement 8: Smart Place Resolver.
+   * Utiliza dados locais do Supabase como âncora, locationBias por coordenadas,
+   * query determinística, FieldMask cirúrgico enriquecido e score determinístico (0-100).
+   * Ordena candidatos por match_score decrescente (o mais compatível primeiro).
    */
   async searchCandidates(
     query: string,
-    options: { maxResults?: number; localPlaceId?: string } = {}
+    options: {
+      maxResults?: number;
+      localPlaceId?: string;
+      localPlace?: any;
+      fieldMask?: string;
+      radiusMeters?: number;
+    } = {}
   ): Promise<{
     status: 'READY' | 'DISABLED' | 'BLOCKED_BY_COST_GUARD' | 'CONFIGURATION_REQUIRED' | 'NO_MATCH';
     message?: string;
-    candidates: Array<{
-      google_place_id: string;
-      name: string;
-      address: string;
-      category?: string;
-      types?: string[];
-      latitude?: number;
-      longitude?: number;
-    }>;
+    candidates: PlaceCandidateDTO[];
   }> {
-    const cleanQuery = query.trim();
+    // 1. Resolução do local local como âncora (Seção 1)
+    let localPlace = options.localPlace;
+    if (!localPlace && options.localPlaceId) {
+      try {
+        localPlace = await supabaseServer.getPlaceById(options.localPlaceId);
+      } catch (err) {
+        console.warn('[SmartPlaceResolver] Não foi possível carregar local pelo ID:', err);
+      }
+    }
+
+    // 2. Query Inteligente determinística (Seção 3)
+    let cleanQuery = (query || '').trim();
+    if (!cleanQuery && localPlace) {
+      cleanQuery = buildPlaceResolutionQuery(localPlace);
+    }
+
     if (!cleanQuery) {
       return {
         status: 'NO_MATCH',
@@ -750,7 +833,7 @@ export class GooglePlacesServerProvider {
       };
     }
 
-    // Cost Guard feature flag check (Req 3)
+    // Cost Guard feature flag check (Req 3 & 17)
     if (!googlePlacesCostGuard.getConfig().enabled) {
       return {
         status: 'DISABLED',
@@ -768,8 +851,11 @@ export class GooglePlacesServerProvider {
       };
     }
 
-    // Cost Guard Budget & Limit check (Req 4)
-    const guardCheck = googlePlacesCostGuard.canMakeRequest('searchText', GOOGLE_FIELD_MASKS.RESOLUTION_INITIAL, this.isConfigured());
+    // 3. FieldMask cirúrgico enriquecido (Seção 4)
+    const mask = options.fieldMask || GOOGLE_FIELD_MASKS.SMART_RESOLUTION;
+
+    // Cost Guard Budget & Limit check (Req 4 & 17)
+    const guardCheck = googlePlacesCostGuard.canMakeRequest('searchText', mask, this.isConfigured());
     if (!guardCheck.allowed) {
       return {
         status: 'BLOCKED_BY_COST_GUARD',
@@ -779,9 +865,30 @@ export class GooglePlacesServerProvider {
     }
 
     try {
+      // 4. Text Search com Location Bias nas coordenadas DUO21 (Seção 2)
+      let locationBias: LocationBiasCircle | undefined = undefined;
+      const radius = options.radiusMeters || Number(process.env.GOOGLE_PLACES_RESOLUTION_RADIUS_METERS) || DEFAULT_RESOLUTION_RADIUS_METERS;
+
+      if (
+        localPlace &&
+        typeof localPlace.latitude === 'number' &&
+        typeof localPlace.longitude === 'number' &&
+        !isNaN(localPlace.latitude) &&
+        !isNaN(localPlace.longitude)
+      ) {
+        locationBias = {
+          center: {
+            latitude: Number(localPlace.latitude),
+            longitude: Number(localPlace.longitude)
+          },
+          radius
+        };
+      }
+
       const places = await this.searchText(cleanQuery, {
-        fieldMask: GOOGLE_FIELD_MASKS.RESOLUTION_INITIAL,
-        maxResultCount: options.maxResults || 5
+        fieldMask: mask,
+        maxResultCount: options.maxResults || 5,
+        locationBias
       });
 
       if (!places || places.length === 0) {
@@ -792,19 +899,15 @@ export class GooglePlacesServerProvider {
         };
       }
 
-      const candidates = places.map(p => ({
-        google_place_id: p.externalId,
-        name: p.name,
-        address: p.address,
-        category: p.city ? `Local em ${p.city}` : 'Ponto de interesse',
-        types: (p as any).types || [],
-        latitude: p.latitude,
-        longitude: p.longitude
-      }));
+      // 5. Match Confidence & Ranking determinístico (Seções 5, 6, 7, 8, 9, 10, 11, 12)
+      const rankedCandidates = rankAndScoreCandidates(
+        localPlace || { name: cleanQuery },
+        places
+      );
 
       return {
         status: 'READY',
-        candidates
+        candidates: rankedCandidates
       };
     } catch (err: any) {
       return {
@@ -816,9 +919,10 @@ export class GooglePlacesServerProvider {
   }
 
   /**
-   * Sprint 10B Requirement 8: Explicitly links a selected Google Place ID to a local place.
+   * Sprint 10B Requirement 8 & Sprint 10C: Explicitly links a selected Google Place ID to a local place.
    * Only persists google_place_id and sets google_sync_status = 'LINKED'.
-   * Never overwrites curatorial fields.
+   * Never overwrites curatorial fields, places.id, or relationships.
+   * Registers audit record.
    */
   async linkGooglePlaceId(localPlaceId: string, googlePlaceId: string): Promise<any> {
     const existing = await supabaseServer.getPlaceById(localPlaceId);
@@ -826,10 +930,472 @@ export class GooglePlacesServerProvider {
       throw new Error('Local não encontrado no catálogo local.');
     }
 
-    return await supabaseServer.updatePlace(localPlaceId, {
+    const updated = await supabaseServer.updatePlace(localPlaceId, {
       google_place_id: googlePlaceId.trim(),
       google_sync_status: 'LINKED'
     });
+
+    await supabaseServer.logApiUsage({
+      trip_id: null,
+      provider: 'GOOGLE_PLACES',
+      operation: 'linkGooglePlaceId',
+      request_count: 0,
+      estimated_cost_brl: 0,
+      cached: false,
+      metadata: {
+        place_id: localPlaceId,
+        google_place_id: googlePlaceId.trim(),
+        action: 'LINK_ONLY_PRESERVE_UUID'
+      }
+    });
+
+    return updated;
+  }
+
+  /**
+   * Sprint 10C Section 3, 5, 6, 7, 8, 9, 13: Controlled Place Details query.
+   * Gated strictly by Cost Guard.
+   * Uses Place Details (New) with surgical FieldMask (no wildcards *).
+   * Models Cache-First: returns cached data when available and provides refresh option.
+   * Compares field-by-field against local DUO21 catalog.
+   */
+  async getControlledPlaceDetails(
+    localPlaceId: string,
+    options: { forceRefresh?: boolean } = {}
+  ): Promise<{
+    status: 'READY' | 'DISABLED' | 'BLOCKED_BY_COST_GUARD' | 'CONFIGURATION_REQUIRED' | 'NO_MATCH' | 'NOT_LINKED';
+    message?: string;
+    fromCache: boolean;
+    cachedAt?: string;
+    googlePlaceId: string;
+    costGuardEstimate: {
+      operation: string;
+      fieldMask: string;
+      fieldMaskList: string[];
+      sku: string;
+      skuName: string;
+      costBrl: number;
+      disclaimer: string;
+    };
+    googleData?: any;
+    localData?: any;
+    diff?: Record<string, { local: any; google: any; different: boolean; label: string }>;
+  }> {
+    const localPlace = await supabaseServer.getPlaceById(localPlaceId);
+    if (!localPlace) {
+      throw new Error(`Local "${localPlaceId}" não encontrado no catálogo.`);
+    }
+
+    if (!localPlace.google_place_id) {
+      return {
+        status: 'NOT_LINKED',
+        message: 'Local não possui Google Place ID vinculado. Pesquise e vincule um candidato antes de consultar dados.',
+        fromCache: false,
+        googlePlaceId: '',
+        costGuardEstimate: {
+          operation: 'Place Details (New)',
+          fieldMask: GOOGLE_FIELD_MASKS.DETAIL,
+          fieldMaskList: GOOGLE_FIELD_MASKS.DETAIL.split(','),
+          sku: 'PlaceDetails_Atmosphere_Contact',
+          skuName: 'Place Details - Atmosphere/Contact (New)',
+          costBrl: 0.12,
+          disclaimer: 'Custo estimado pelo Cost Guard interno (não confundir com Cobrança efetiva Google Cloud).'
+        }
+      };
+    }
+
+    const googlePlaceId = localPlace.google_place_id;
+    const mask = GOOGLE_FIELD_MASKS.DETAIL;
+    const cacheKey = `google_places:details:${googlePlaceId}:${mask}`;
+
+    const estimate = {
+      operation: 'Place Details (New)',
+      fieldMask: mask,
+      fieldMaskList: mask.split(','),
+      sku: 'PlaceDetails_Atmosphere_Contact',
+      skuName: 'Place Details - Atmosphere & Contact (New)',
+      costBrl: 0.12,
+      disclaimer: 'Custo estimado pelo Cost Guard interno (não confundir com Cobrança efetiva Google Cloud).'
+    };
+
+    // 1. Cache-First check (Requirement 13)
+    if (!options.forceRefresh) {
+      const cached = await supabaseServer.getCache(cacheKey);
+      if (cached && cached.payload) {
+        const cachedGoogle = cached.payload;
+        return {
+          status: 'READY',
+          fromCache: true,
+          cachedAt: cached.created_at || localPlace.google_last_sync_at || new Date().toISOString(),
+          googlePlaceId,
+          costGuardEstimate: estimate,
+          googleData: cachedGoogle,
+          localData: this.extractLocalDiffData(localPlace),
+          diff: this.buildDiffComparison(localPlace, cachedGoogle)
+        };
+      }
+    }
+
+    // 2. Cost Guard Gate
+    if (!googlePlacesCostGuard.getConfig().enabled) {
+      return {
+        status: 'DISABLED',
+        message: 'Google Places desativado pelo Cost Guard (GOOGLE_PLACES_ENABLED=false). Nenhuma chamada externa é permitida.',
+        fromCache: false,
+        googlePlaceId,
+        costGuardEstimate: estimate
+      };
+    }
+
+    // Mock Mode fallback if key not configured
+    if (!this.isConfigured()) {
+      let mockFound: any = null;
+      for (const p of Object.values(MOCK_PLACES_CATALOG)) {
+        if (p.externalId === googlePlaceId || (localPlace.name && p.name.toLowerCase().includes(localPlace.name.toLowerCase()))) {
+          mockFound = p;
+          break;
+        }
+      }
+
+      if (!mockFound) {
+        mockFound = {
+          externalId: googlePlaceId,
+          name: localPlace.name,
+          address: localPlace.address || `${localPlace.name}, Gramado - RS`,
+          latitude: localPlace.latitude || -29.3888,
+          longitude: localPlace.longitude || -50.8808,
+          types: ['tourist_attraction', 'point_of_interest'],
+          rating: 4.8,
+          userRatingCount: 28450,
+          websiteUri: localPlace.official_url || localPlace.website || 'https://gramado.rs.gov.br',
+          googleMapsUri: `https://maps.google.com/?cid=${Date.now()}`,
+          nationalPhoneNumber: localPlace.phone || '(54) 3286-0000',
+          openingHours: {
+            seg: 'Aberto 24 horas',
+            ter: 'Aberto 24 horas',
+            qua: 'Aberto 24 horas',
+            qui: 'Aberto 24 horas',
+            sex: 'Aberto 24 horas',
+            sab: 'Aberto 24 horas',
+            dom: 'Aberto 24 horas'
+          }
+        };
+      }
+
+      await supabaseServer.setCache(cacheKey, 'GOOGLE_PLACES', 'getPlaceDetails', mockFound, CACHE_TTLS.PLACE_ID_COORDS);
+
+      return {
+        status: 'READY',
+        fromCache: false,
+        cachedAt: new Date().toISOString(),
+        googlePlaceId,
+        costGuardEstimate: estimate,
+        googleData: mockFound,
+        localData: this.extractLocalDiffData(localPlace),
+        diff: this.buildDiffComparison(localPlace, mockFound)
+      };
+    }
+
+    // 3. Quota & Limits check
+    const guardCheck = googlePlacesCostGuard.canMakeRequest('getPlaceDetails', mask, this.isConfigured());
+    if (!guardCheck.allowed) {
+      return {
+        status: 'BLOCKED_BY_COST_GUARD',
+        message: guardCheck.reason || 'Chamada bloqueada pelo Cost Guard.',
+        fromCache: false,
+        googlePlaceId,
+        costGuardEstimate: estimate
+      };
+    }
+
+    // 4. Server-side Place Details (New) fetch
+    try {
+      const details = await this.getPlaceDetails(googlePlaceId, {
+        fieldMask: mask,
+        skipCache: options.forceRefresh
+      });
+
+      if (!details) {
+        return {
+          status: 'NO_MATCH',
+          message: `Nenhum detalhe retornado para o Place ID "${googlePlaceId}".`,
+          fromCache: false,
+          googlePlaceId,
+          costGuardEstimate: estimate
+        };
+      }
+
+      // Invariante 15: Place Details protegido — o ID retornado pelo Google DEVE ser estritamente igual ao solicitado
+      if (details.externalId && details.externalId !== googlePlaceId) {
+        console.error(`[Place Details Invariant Violation] requested=${googlePlaceId} vs returned=${details.externalId}`);
+        return {
+          status: 'NO_MATCH',
+          message: `Inconsistência de Place ID detectada: o ID retornado pelo Google (${details.externalId}) diverge do solicitado (${googlePlaceId}). Operação bloqueada por segurança.`,
+          fromCache: false,
+          googlePlaceId,
+          costGuardEstimate: estimate
+        };
+      }
+
+      return {
+        status: 'READY',
+        fromCache: false,
+        cachedAt: new Date().toISOString(),
+        googlePlaceId,
+        costGuardEstimate: estimate,
+        googleData: details,
+        localData: this.extractLocalDiffData(localPlace),
+        diff: this.buildDiffComparison(localPlace, details)
+      };
+    } catch (err: any) {
+      return {
+        status: 'NO_MATCH',
+        message: err.message || 'Falha ao consultar detalhes no Google Places.',
+        fromCache: false,
+        googlePlaceId,
+        costGuardEstimate: estimate
+      };
+    }
+  }
+
+  private extractLocalDiffData(local: any): any {
+    return {
+      name: local.name || '',
+      address: local.address || '',
+      latitude: local.latitude ?? null,
+      longitude: local.longitude ?? null,
+      opening_hours: local.opening_hours || null,
+      rating: local.rating ?? null,
+      rating_count: local.rating_count || 0,
+      website: local.official_url || local.website || '',
+      maps_url: local.maps_url || '',
+      phone: local.phone || ''
+    };
+  }
+
+  private buildDiffComparison(local: any, google: any): Record<string, { local: any; google: any; different: boolean; label: string }> {
+    const googleRating = typeof google.rating === 'number' ? google.rating : null;
+    const googleRatingCount = typeof google.userRatingCount === 'number' ? google.userRatingCount : (google.rating_count || null);
+    const googleWebsite = google.websiteUri || google.website_url || google.website || '';
+    const googleMapsUrl = google.googleMapsUri || google.maps_url || '';
+    const googlePhone = google.nationalPhoneNumber || google.phone || '';
+    const googleHours = google.openingHours || google.opening_hours || null;
+
+    const areHoursDifferent = (h1: any, h2: any): boolean => {
+      if (!h1 && !h2) return false;
+      if (!h1 || !h2) return true;
+      const keys = ['seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'];
+      return keys.some(k => (h1[k] || '').trim() !== (h2[k] || '').trim());
+    };
+
+    return {
+      name: {
+        label: 'Nome',
+        local: local.name || 'Não informado',
+        google: google.name || 'Não informado',
+        different: (local.name || '').trim() !== (google.name || '').trim()
+      },
+      address: {
+        label: 'Endereço',
+        local: local.address || 'Não informado',
+        google: google.address || 'Não informado',
+        different: (local.address || '').trim() !== (google.address || '').trim()
+      },
+      latitude: {
+        label: 'Latitude',
+        local: local.latitude !== undefined && local.latitude !== null ? Number(local.latitude) : 'Não informado',
+        google: google.latitude !== undefined && google.latitude !== null ? Number(google.latitude) : 'Não informado',
+        different: Number(local.latitude || 0).toFixed(4) !== Number(google.latitude || 0).toFixed(4)
+      },
+      longitude: {
+        label: 'Longitude',
+        local: local.longitude !== undefined && local.longitude !== null ? Number(local.longitude) : 'Não informado',
+        google: google.longitude !== undefined && google.longitude !== null ? Number(google.longitude) : 'Não informado',
+        different: Number(local.longitude || 0).toFixed(4) !== Number(google.longitude || 0).toFixed(4)
+      },
+      hours: {
+        label: 'Horários de Funcionamento',
+        local: local.opening_hours || null,
+        google: googleHours,
+        different: areHoursDifferent(local.opening_hours, googleHours)
+      },
+      rating: {
+        label: 'Avaliação (Rating)',
+        local: local.rating !== undefined && local.rating !== null ? Number(local.rating) : 'Não informado',
+        google: googleRating !== null ? Number(googleRating) : 'Não informado',
+        different: Number(local.rating || 0).toFixed(1) !== Number(googleRating || 0).toFixed(1)
+      },
+      ratingCount: {
+        label: 'Quantidade de Avaliações',
+        local: local.rating_count !== undefined && local.rating_count !== null ? Number(local.rating_count) : 'Não informado',
+        google: googleRatingCount !== null ? Number(googleRatingCount) : 'Não informado',
+        different: Number(local.rating_count || 0) !== Number(googleRatingCount || 0)
+      },
+      website: {
+        label: 'Site Oficial',
+        local: local.official_url || local.website || 'Não informado',
+        google: googleWebsite || 'Não informado',
+        different: (local.official_url || local.website || '').trim() !== googleWebsite.trim()
+      },
+      mapsUrl: {
+        label: 'Link Google Maps',
+        local: local.maps_url || 'Não informado',
+        google: googleMapsUrl || 'Não informado',
+        different: (local.maps_url || '').trim() !== googleMapsUrl.trim()
+      },
+      phone: {
+        label: 'Telefone',
+        local: local.phone || 'Não informado',
+        google: googlePhone || 'Não informado',
+        different: (local.phone || '').trim() !== googlePhone.trim()
+      }
+    };
+  }
+
+  /**
+   * Sprint 10C Requirement 9, 10, 11, 12: Applies ONLY administrator-selected fields from Google Places.
+   * Strictly enforces curatorial preservation:
+   * - photo atual, cover, place_media_items, Supabase Storage
+   * - descrição DUO21 & descrição curta
+   * - preço, price_notes, price_level
+   * - duração
+   * - tags & suitable_for
+   * - partner status & prioridade comercial
+   * - Dica Divulga Lugares & divulga_content & divulga_article_url
+   * - Instagram & ticket_url & WhatsApp
+   * Updates hours_source and rating_source when those fields are accepted.
+   * Syncs place_hours table in Supabase.
+   */
+  async applyControlledEnrichment(
+    localPlaceId: string,
+    payload: {
+      selectedFields: {
+        name?: boolean;
+        address?: boolean;
+        latitude?: boolean;
+        longitude?: boolean;
+        hours?: boolean;
+        rating?: boolean;
+        ratingCount?: boolean;
+        website?: boolean;
+        mapsUrl?: boolean;
+        phone?: boolean;
+      };
+      googleData: any;
+    }
+  ): Promise<any> {
+    const existing = await supabaseServer.getPlaceById(localPlaceId);
+    if (!existing) {
+      throw new Error(`Local "${localPlaceId}" não encontrado no catálogo.`);
+    }
+
+    const { selectedFields, googleData } = payload;
+    const now = new Date().toISOString();
+
+    const updates: Record<string, any> = {
+      google_last_sync_at: now,
+      google_sync_status: 'ENRICHED',
+      google_data_version: 'v10c'
+    };
+
+    if (selectedFields.name && googleData.name) {
+      updates.name = googleData.name;
+    }
+    if (selectedFields.address && googleData.address) {
+      updates.address = googleData.address;
+    }
+    if (selectedFields.latitude && googleData.latitude !== undefined && googleData.latitude !== null) {
+      updates.latitude = Number(googleData.latitude);
+    }
+    if (selectedFields.longitude && googleData.longitude !== undefined && googleData.longitude !== null) {
+      updates.longitude = Number(googleData.longitude);
+    }
+    if (selectedFields.rating && googleData.rating !== undefined && googleData.rating !== null) {
+      updates.rating = Number(googleData.rating);
+      updates.rating_source = 'google_places';
+      updates.rating_last_checked_at = now;
+    }
+    if (selectedFields.ratingCount) {
+      const count = googleData.userRatingCount ?? googleData.rating_count;
+      if (count !== undefined && count !== null) {
+        updates.rating_count = Number(count);
+      }
+    }
+    if (selectedFields.website) {
+      const site = googleData.websiteUri || googleData.website_url || googleData.website;
+      if (site) {
+        updates.official_url = site;
+        updates.website = site;
+      }
+    }
+    if (selectedFields.mapsUrl) {
+      const maps = googleData.googleMapsUri || googleData.maps_url;
+      if (maps) {
+        updates.maps_url = maps;
+      }
+    }
+    if (selectedFields.phone) {
+      const tel = googleData.nationalPhoneNumber || googleData.phone;
+      if (tel) {
+        updates.phone = tel;
+      }
+    }
+    if (selectedFields.hours) {
+      const hours = googleData.openingHours || googleData.opening_hours;
+      if (hours && typeof hours === 'object' && Object.keys(hours).length > 0) {
+        updates.hours_source = 'google_places';
+        updates.hours_last_checked_at = now;
+        await supabaseServer.syncPlaceHours(localPlaceId, hours);
+      }
+    }
+
+    // STRICT CURATORIAL & MEDIA PROTECTION (Sprint 10C Requirement 11 & 12):
+    // The following manual/DUO21 fields are 100% IMMUTABLE and NEVER overwritten by Google:
+    // Notice: updates does NOT include media so existing place_media_items / media array is preserved untouched
+    updates.description = existing.description;
+    updates.description_short = existing.description_short;
+    updates.price_info = existing.price_info;
+    updates.price_notes = existing.price_notes;
+    updates.price_level = existing.price_level;
+    updates.duration_min = existing.duration_min;
+    updates.duration_max = existing.duration_max;
+    updates.average_duration_minutes = existing.average_duration_minutes;
+    updates.tags = existing.tags;
+    updates.suitable_for = existing.suitable_for;
+    updates.partner = existing.partner;
+    updates.is_divulga_lugares_partner = existing.is_divulga_lugares_partner;
+    updates.partner_status = existing.partner_status;
+    updates.partner_priority = existing.partner_priority;
+    updates.divulga_lugares_tip = existing.divulga_lugares_tip;
+    updates.divulga_content_active = existing.divulga_content_active;
+    updates.divulga_article_url = existing.divulga_article_url;
+    updates.divulga_instagram_url = existing.divulga_instagram_url;
+    updates.divulga_youtube_url = existing.divulga_youtube_url;
+    updates.divulga_tiktok_url = existing.divulga_tiktok_url;
+    updates.instagram = existing.instagram;
+    updates.instagram_url = existing.instagram_url;
+    updates.ticket_url = existing.ticket_url;
+    updates.booking_url = existing.booking_url;
+    updates.whatsapp = existing.whatsapp;
+
+    const updated = await supabaseServer.updatePlace(localPlaceId, updates);
+
+    // Audit log
+    await supabaseServer.logApiUsage({
+      trip_id: null,
+      provider: 'GOOGLE_PLACES',
+      operation: 'applyControlledEnrichment',
+      request_count: 0,
+      estimated_cost_brl: 0,
+      cached: false,
+      metadata: {
+        place_id: localPlaceId,
+        google_place_id: existing.google_place_id,
+        applied_fields: Object.keys(selectedFields).filter(k => (selectedFields as any)[k])
+      }
+    });
+
+    return updated;
   }
 
   /**
@@ -872,9 +1438,9 @@ export class GooglePlacesServerProvider {
       updates.address = candidate.address;
     }
     if (options.importHours && candidate.opening_hours) {
-      updates.opening_hours = candidate.opening_hours;
       updates.hours_source = 'google_places';
       updates.hours_last_checked_at = new Date().toISOString();
+      await supabaseServer.syncPlaceHours(localPlaceId, candidate.opening_hours);
     }
     if (options.importRating && candidate.rating) {
       updates.rating = candidate.rating;

@@ -960,7 +960,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
                   <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Chamadas Hoje</span>
                   <span className="text-base font-black text-[#1E293B] mt-0.5 block">
-                    {costGuardMetrics?.callsToday ?? 0} <span className="text-[10px] text-[#64748B] font-normal">/ {costGuardMetrics?.dailyLimit ?? 50} máx</span>
+                    {costGuardMetrics?.callsToday ?? 0} <span className="text-[10px] text-[#64748B] font-normal">/ {costGuardMetrics?.dailyLimit ?? 20} máx</span>
                   </span>
                 </div>
 
@@ -992,14 +992,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
                   <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Budget Restante Hoje</span>
                   <span className="text-base font-black text-emerald-700 mt-0.5 block">
-                    R$ {costGuardMetrics?.remainingDailyBudgetBrl?.toFixed(2) ?? '10.00'}
+                    R$ {costGuardMetrics?.remainingDailyBudgetBrl?.toFixed(2) ?? '5.00'}
                   </span>
                 </div>
 
                 <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
                   <span className="text-[10px] uppercase font-bold text-[#7A6F5D] block">Budget Restante Mês</span>
                   <span className="text-base font-black text-emerald-700 mt-0.5 block">
-                    R$ {costGuardMetrics?.remainingMonthlyBudgetBrl?.toFixed(2) ?? '100.00'}
+                    R$ {costGuardMetrics?.remainingMonthlyBudgetBrl?.toFixed(2) ?? '50.00'}
                   </span>
                 </div>
 

@@ -21,6 +21,7 @@ import { finalItineraryEngine } from './src/services/finalItineraryEngine';
 import { SEED_PLACES } from './src/data/seedData';
 import { DEFAULT_WEIGHTS } from './src/services/itineraryEngine';
 import { Place } from './src/types';
+import { buildPlaceResolutionQuery } from './src/services/places/SmartPlaceResolver';
 import { parseBudgetFromNaturalText } from './src/services/ai/heuristicParser';
 import { rateLimitService } from './src/server/security/RateLimitService';
 import { singleFlight } from './src/server/cache/SingleFlight';
@@ -2154,13 +2155,18 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  // Sprint 10B Requirement 8 & 9: Controlled Candidate Search, Selection, and Place ID Linking
+  // Sprint 10B Requirement 8 & 9 + Hotfix P1: Smart Place Resolution
   app.post('/api/admin/places/:id/google-candidates', requireAdmin, async (req, res) => {
     try {
       const localPlace = await supabaseServer.getPlaceById(req.params.id);
-      const query = req.body.query || (localPlace ? `${localPlace.name} ${localPlace.city}` : '');
+      if (!localPlace) {
+        res.status(404).json({ error: 'Local não encontrado no catálogo.' });
+        return;
+      }
+      const query = (req.body.query || '').trim() || buildPlaceResolutionQuery(localPlace);
       const result = await googlePlacesServer.searchCandidates(query, {
         localPlaceId: req.params.id,
+        localPlace,
         maxResults: req.body.maxResults || 5
       });
       res.json(result);
@@ -2180,6 +2186,36 @@ ${JSON.stringify(context || {})}`;
       res.json({ success: true, place: updated });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Sprint 10C: Controlled Place Details query (Requirement 3, 5, 6, 7, 8, 9, 13)
+  app.post('/api/admin/places/:id/google-details', requireAdmin, async (req, res) => {
+    try {
+      const forceRefresh = req.body?.forceRefresh === true || req.body?.forceRefresh === 'true';
+      const result = await googlePlacesServer.getControlledPlaceDetails(req.params.id, { forceRefresh });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao consultar detalhes no Google Places' });
+    }
+  });
+
+  // Sprint 10C: Apply ONLY selected fields from Google Places with strict Curatorial & Media protection (Req 9, 10, 11, 12)
+  app.post('/api/admin/places/:id/google-apply', requireAdmin, async (req, res) => {
+    try {
+      const { selectedFields, googleData, candidate } = req.body;
+      const dataToApply = googleData || candidate;
+      if (!dataToApply) {
+        res.status(400).json({ error: 'Dados do Google Places não informados.' });
+        return;
+      }
+      const updated = await googlePlacesServer.applyControlledEnrichment(req.params.id, {
+        selectedFields: selectedFields || {},
+        googleData: dataToApply
+      });
+      res.json({ success: true, place: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao aplicar enriquecimento controlado.' });
     }
   });
 
