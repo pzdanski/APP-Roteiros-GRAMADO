@@ -50,12 +50,24 @@ export function createAdminAuthMiddleware(adminApiKey: string): AdminAuthManager
 
     const providedKey = headerKey || bearerToken;
     if (providedKey && providedKey === adminApiKey) {
+      (req as any).adminUser = {
+        id: 'master-admin-key',
+        role: 'admin',
+        authMethod: 'api_key',
+        authenticatedAt: new Date().toISOString()
+      };
       return next();
     }
 
     // 2. Cryptographic session token header
     const sessionTokenHeader = req.headers['x-admin-session'] as string | undefined;
     if (sessionTokenHeader && verifySessionToken(sessionTokenHeader)) {
+      (req as any).adminUser = {
+        id: 'session-authenticated-admin',
+        role: 'admin',
+        authMethod: 'session_token',
+        authenticatedAt: new Date().toISOString()
+      };
       return next();
     }
 
@@ -71,19 +83,17 @@ export function createAdminAuthMiddleware(adminApiKey: string): AdminAuthManager
         })
       );
       if (cookieMap['duo_admin_token'] && verifySessionToken(cookieMap['duo_admin_token'])) {
+        (req as any).adminUser = {
+          id: 'cookie-authenticated-admin',
+          role: 'admin',
+          authMethod: 'cookie',
+          authenticatedAt: new Date().toISOString()
+        };
         return next();
       }
     }
 
-    // 4. Same-origin session for verified Control Plane navigation (/duo-control)
-    const referer = (req.headers.referer || req.headers.origin || '') as string;
-    const secFetchSite = req.headers['sec-fetch-site'];
-    const controlPlaneHeader = req.headers['x-admin-control-plane'];
-    const isSameOrigin = secFetchSite === 'same-origin' || secFetchSite === 'none' || !secFetchSite;
-    if (isSameOrigin && (referer.includes('/duo-control') || referer.includes('admin=true') || controlPlaneHeader === 'duo21')) {
-      return next();
-    }
-
+    // Bloqueia qualquer acesso anônimo — sem contorno por referer ou headers artificiais
     res.status(401).json({
       code: 'UNAUTHORIZED',
       error: 'Chave de administração inválida ou não fornecida.',

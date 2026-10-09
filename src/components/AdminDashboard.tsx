@@ -49,7 +49,14 @@ import { EngineWeights, DEFAULT_WEIGHTS } from '../services/itineraryEngine';
 import { providerRegistry, RegisteredProviderStatus } from '../services/providers';
 import { PlaceEditorModal } from './PlaceEditorModal';
 import { CatalogAcceleratorModal } from './CatalogAcceleratorModal';
-import { calculatePlaceDataQuality } from '../utils/dataQuality';
+import { 
+  calculatePlaceDataQuality, 
+  hasRealPhotos, 
+  hasRealGooglePlaceId, 
+  isDemoPlaceId, 
+  auditPlaceRecord, 
+  isPlaceEligibleForItinerary 
+} from '../utils/dataQuality';
 import { hasDivulgaContent } from '../utils/formatters';
 
 interface AdminDashboardProps {
@@ -76,16 +83,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Sprint 9.2 & Hotfix 10A.2: Administrative Session & Key State
   const [adminApiKey, setAdminApiKey] = useState<string>(() => {
-    return localStorage.getItem('duo21_admin_key') || '';
+    // Audit Release Gate P0: ADMIN_API_KEY não deve persistir em localStorage
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.removeItem('duo21_admin_key');
+      }
+    } catch {}
+    return (typeof window !== 'undefined' && sessionStorage.getItem('duo21_admin_key')) || '';
   });
   const [adminSessionToken, setAdminSessionToken] = useState<string | null>(() => {
-    return sessionStorage.getItem('duo21_admin_session') || null;
+    return (typeof window !== 'undefined' && sessionStorage.getItem('duo21_admin_session')) || null;
   });
 
-  // Establish Admin Session for Control Plane without exposing API key
+  // Establish Admin Session for Control Plane with authentication
   React.useEffect(() => {
+    const key = adminApiKey || (typeof window !== 'undefined' && sessionStorage.getItem('duo21_admin_key')) || '';
+    const existingToken = adminSessionToken || (typeof window !== 'undefined' && sessionStorage.getItem('duo21_admin_session'));
+
+    if (!key && !existingToken) return;
+
     fetch('/api/admin/session', {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(key ? { 'x-admin-key': key } : {}),
+        ...(existingToken ? { 'x-admin-session': existingToken } : {})
+      },
+      body: JSON.stringify({ adminApiKey: key }),
       credentials: 'include'
     })
       .then(r => r.ok ? r.json() : null)
@@ -96,7 +120,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         }
       })
       .catch(() => {});
-  }, []);
+  }, [adminApiKey]);
 
   const getAdminHeaders = React.useCallback((extraHeaders: Record<string, string> = {}) => {
     const headers: Record<string, string> = { 
@@ -1501,36 +1525,60 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               )}
 
-              {/* Catalog Metrics Summary Grid (Sprint 10A Section 2) */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              {/* Catalog Metrics Summary Grid (Sprint 10D Hotfix P0 - Indicadores Reais Auditados) */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 text-xs">
                 <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
-                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Locais Cadastrados</span>
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Cadastrados</span>
                   <span className="font-extrabold text-base text-[#1E293B] mt-0.5 block">
-                    {places.length} <span className="text-[10px] text-[#64748B] font-normal">/ 300 meta MVP</span>
+                    {places.length} <span className="text-[10px] text-[#64748B] font-normal">total</span>
                   </span>
                 </div>
 
                 <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
-                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Com Fotos</span>
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Verificados</span>
+                  <span className="font-extrabold text-base text-emerald-800 mt-0.5 block">
+                    {places.filter(p => (p.audit_status || auditPlaceRecord(p)) === 'VERIFIED').length}
+                    <span className="text-[10px] text-emerald-600 font-normal"> / {places.length}</span>
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Fotos Reais</span>
                   <span className="font-extrabold text-base text-[#1B4332] mt-0.5 block">
-                    {places.filter(p => (Array.isArray(p.media) && p.media.some(m => m.active !== false && m.url)) || (p as any).media_url).length}
-                    <span className="text-[10px] text-[#64748B] font-normal"> ({places.filter(p => !((Array.isArray(p.media) && p.media.some(m => m.active !== false && m.url)) || (p as any).media_url)).length} sem)</span>
+                    {places.filter(p => hasRealPhotos(p)).length}
+                    <span className="text-[10px] text-amber-600 font-normal"> ({places.filter(p => !hasRealPhotos(p)).length} placeh.)</span>
                   </span>
                 </div>
 
                 <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
-                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Google Place ID</span>
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Place ID Real</span>
                   <span className="font-extrabold text-base text-blue-700 mt-0.5 block">
-                    {places.filter(p => p.google_place_id && p.google_place_id.trim().length > 0).length}
-                    <span className="text-[10px] text-[#64748B] font-normal"> resolvidos</span>
+                    {places.filter(p => hasRealGooglePlaceId(p)).length}
+                    <span className="text-[10px] text-[#64748B] font-normal"> homolog.</span>
                   </span>
                 </div>
 
                 <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
-                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">⭐ Dica Divulga</span>
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">IDs Demo / Pend.</span>
                   <span className="font-extrabold text-base text-amber-700 mt-0.5 block">
-                    {places.filter(p => hasDivulgaContent(p)).length}
+                    {places.filter(p => isDemoPlaceId(p.google_place_id) || (p.audit_status || auditPlaceRecord(p)) === 'PENDING_VERIFICATION').length}
+                    <span className="text-[10px] text-[#64748B] font-normal"> a resolver</span>
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Elegíveis Roteiro</span>
+                  <span className="font-extrabold text-base text-indigo-700 mt-0.5 block">
+                    {places.filter(p => isPlaceEligibleForItinerary(p)).length}
                     <span className="text-[10px] text-[#64748B] font-normal"> ativos</span>
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white rounded-2xl border border-[#E7DFCE]">
+                  <span className="text-[10px] text-[#7A6F5D] uppercase font-bold block">Parceiros Reais</span>
+                  <span className="font-extrabold text-base text-purple-700 mt-0.5 block">
+                    {places.filter(p => p.is_divulga_lugares_partner && !isDemoPlaceId(p.google_place_id)).length}
+                    <span className="text-[10px] text-[#64748B] font-normal"> comprov.</span>
                   </span>
                 </div>
               </div>
@@ -1782,16 +1830,55 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   ⭐ Dica Divulga
                                 </span>
                               )}
-                              {(p.is_divulga_lugares_partner || (p as any).partner) && (
+                              {/* Audit Status Badge */}
+                              {(p.audit_status || auditPlaceRecord(p)) === 'VERIFIED' ? (
+                                <span className="text-[9px] font-black bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded border border-emerald-300">
+                                  ✓ Auditado
+                                </span>
+                              ) : (p.audit_status || auditPlaceRecord(p)) === 'PENDING_VERIFICATION' ? (
+                                <span className="text-[9px] font-bold bg-amber-50 text-amber-800 px-1.5 py-0.2 rounded border border-amber-200">
+                                  Pendente Resolução
+                                </span>
+                              ) : (p.audit_status || auditPlaceRecord(p)) === 'DEMO' ? (
+                                <span className="text-[9px] font-bold bg-rose-50 text-rose-800 px-1.5 py-0.2 rounded border border-rose-200">
+                                  Demo
+                                </span>
+                              ) : (
+                                <span className="text-[9px] font-bold bg-red-100 text-red-800 px-1.5 py-0.2 rounded border border-red-300">
+                                  Conflito
+                                </span>
+                              )}
+
+                              {/* Parceria Comercial (Apenas se comprovada) */}
+                              {p.is_divulga_lugares_partner && !isDemoPlaceId(p.google_place_id) && (
                                 <span className="text-[9px] font-extrabold bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded">
                                   🤝 Parceiro
                                 </span>
                               )}
-                              {p.google_place_id && (
-                                <span className="text-[9px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.2 rounded">
-                                  Place ID
+
+                              {/* Google Place ID Real vs Demonstrativo */}
+                              {isDemoPlaceId(p.google_place_id) ? (
+                                <span className="text-[9px] font-bold bg-orange-100 text-orange-800 px-1.5 py-0.2 rounded" title="Google Place ID demonstrativo pendente de Smart Resolver">
+                                  ID Demo
+                                </span>
+                              ) : hasRealGooglePlaceId(p) ? (
+                                <span className="text-[9px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.2 rounded" title="Google Place ID real verificado">
+                                  Place ID Real
+                                </span>
+                              ) : null}
+
+                              {/* Fotos: Real vs Placeholder */}
+                              {hasRealPhotos(p) ? (
+                                <span className="text-[9px] font-semibold bg-emerald-50 text-emerald-700 px-1.5 py-0.2 rounded">
+                                  Foto Real
+                                </span>
+                              ) : (
+                                <span className="text-[9px] font-normal bg-slate-100 text-slate-500 px-1.5 py-0.2 rounded">
+                                  Placeholder
                                 </span>
                               )}
+
+                              {/* Data Quality Score (com cap anti-placeholder) */}
                               <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
                                 dq.label === 'Completo' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
                                 dq.label === 'Bom' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
@@ -2419,7 +2506,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     value={adminApiKey}
                     onChange={(e) => {
                       setAdminApiKey(e.target.value);
-                      localStorage.setItem('duo21_admin_key', e.target.value);
+                      if (typeof window !== 'undefined') {
+                        sessionStorage.setItem('duo21_admin_key', e.target.value);
+                        localStorage.removeItem('duo21_admin_key');
+                      }
                     }}
                     placeholder="Insira a chave admin"
                     className="flex-1 px-3 py-2 text-xs bg-white rounded-xl border border-slate-300 font-mono outline-none focus:border-emerald-600"
@@ -2717,6 +2807,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         onClose={() => setShowAcceleratorModal(false)}
         onRefreshCatalog={fetchPlacesAndMetrics}
         adminApiKey={adminApiKey}
+        adminSessionToken={adminSessionToken}
       />
     </div>
   );

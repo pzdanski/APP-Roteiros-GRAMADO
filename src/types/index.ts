@@ -173,6 +173,7 @@ export interface PlaceMedia {
   source?: MediaSource;
   video_url?: string;
   uploaded_at?: string;
+  is_placeholder?: boolean;
   // Hotfix 10A.2: Responsive & Optimized Image Variants
   thumbnail_url?: string;
   card_url?: string;
@@ -277,6 +278,8 @@ export interface Place {
   google_last_sync_at?: string;
   google_sync_status?: 'NOT_SYNCED' | 'RESOLVED' | 'ENRICHED' | 'FAILED' | 'CONFIG_REQUIRED';
   google_data_version?: string;
+  audit_status?: 'VERIFIED' | 'PENDING_VERIFICATION' | 'DEMO' | 'CONFLICT';
+  is_place_id_verified?: boolean;
   price_notes?: string;
   price_valid_from?: string;
   price_valid_until?: string;
@@ -706,3 +709,99 @@ export interface AdminMetrics {
 }
 
 export type AppTab = 'hoje' | 'roteiro' | 'mapa' | 'guia';
+
+export type PhaseAuthorizationStatus = 
+  | 'AGUARDANDO_AUTORIZACAO'
+  | 'AUTORIZADA'
+  | 'REVOGADA'
+  | 'BLOQUEADA_POR_SEGURANCA'
+  | 'ERRO';
+
+export interface PhaseAuthorizationRecord {
+  authorization_id: string;
+  phase_id: 1 | 2 | 3;
+  status: PhaseAuthorizationStatus;
+  authorized_by: string;
+  authorized_at: string | null;
+  approved_limits: {
+    maxMicrolots?: number;
+    dailyLimit?: number;
+    monthlyLimit?: number;
+    dailyBudgetBrl?: number;
+    monthlyBudgetBrl?: number;
+    reason?: string;
+  };
+  revoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Sprint 10D Hotfix P0 Etapa 3 — Estados de Execução Durável e Checkpoints
+export type AcceleratorExecutionStatus =
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'PAUSE_REQUESTED'
+  | 'PAUSED'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export interface AcceleratorCheckpointRecord {
+  checkpoint_id: string;
+  execution_id: string;
+  microlot_number: number;
+  step_name: string;
+  processed_items: number;
+  imported_items: number;
+  duplicate_items: number;
+  review_required_items: number;
+  failed_items: number;
+  estimated_cost_brl: number;
+  sample_audited?: Array<{
+    id: string;
+    name: string;
+    city: string;
+    category: string;
+    google_place_id: string;
+    rating: number;
+    address: string;
+  }>;
+  metadata?: Record<string, any>;
+  created_at: string;
+}
+
+export interface AcceleratorExecutionRecord {
+  execution_id: string;
+  phase_id: 1 | 2 | 3;
+  microlot_number: number;
+  status: AcceleratorExecutionStatus;
+  total_items: number;
+  processed_items: number;
+  discovered_items: number;
+  analyzed_items: number;
+  imported_items: number;
+  duplicate_items: number;
+  review_required_items: number;
+  failed_items: number;
+  current_step: string;
+  started_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  last_error: string | null;
+  google_calls_by_sku: Record<string, number>;
+  estimated_cost_brl: number;
+  authorized_by: string;
+  checkpoints: AcceleratorCheckpointRecord[];
+  lease_owner: string | null;
+  lease_expires_at: string | null;
+  created_at: string;
+}
+
+export interface AcceleratorPhaseLockRecord {
+  phase_id: 1 | 2 | 3;
+  current_execution_id: string;
+  locked_by: string;
+  lease_expires_at: string;
+  acquired_at: string;
+  updated_at: string;
+}

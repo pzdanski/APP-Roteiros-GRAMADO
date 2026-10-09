@@ -2,8 +2,23 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import { validateServerEnv, ValidatedEnv } from './envValidator';
 import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
-import { calculatePlaceDataQuality } from '../utils/dataQuality';
-import { PlaceCategory } from '../types';
+import { 
+  calculatePlaceDataQuality, 
+  hasRealPhotos, 
+  hasRealGooglePlaceId, 
+  isDemoPlaceId, 
+  isPlaceholderImageUrl, 
+  auditPlaceRecord, 
+  isPlaceEligibleForItinerary 
+} from '../utils/dataQuality';
+import { 
+  PlaceCategory, 
+  PhaseAuthorizationRecord,
+  AcceleratorExecutionRecord,
+  AcceleratorPhaseLockRecord,
+  AcceleratorCheckpointRecord,
+  AcceleratorExecutionStatus
+} from '../types';
 
 // Legacy seed identifier mapping for backwards compatibility with test fixtures and legacy seeds
 export const LEGACY_SEED_TO_SLUG: Record<string, string> = {
@@ -123,7 +138,7 @@ export const VALID_PLACE_COLUMNS = new Set([
   'price_notes', 'price_valid_from', 'price_valid_until',
   'data_quality_label', 'data_quality_score', 'always_open',
   'hours_source', 'hours_last_checked_at', 'rating_source', 'rating_last_checked_at',
-  'rating', 'rating_count'
+  'rating', 'rating_count', 'audit_status'
 ]);
 
 export function resolvePlaceUuid(id?: string, slug?: string): string {
@@ -180,11 +195,23 @@ export function mapRawPlaceToClientPlace(row: any): any {
     indoor_type: row.indoor_outdoor || 'outdoor',
     opening_hours: row.opening_hours || { 'seg': '09:00 - 18:00' },
     media: Array.isArray(row.media) && row.media.length > 0
-      ? row.media
-      : [{ url: row.media_url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80', is_hero: true, source: 'duo21' }],
-    is_divulga_lugares_partner: Boolean(row.partner || row.is_divulga_lugares_partner || row.divulga_lugares_recommended),
+      ? row.media.map((m: any) => ({
+          ...m,
+          is_placeholder: Boolean(m.is_placeholder || isPlaceholderImageUrl(m.url)),
+          source: isPlaceholderImageUrl(m.url) ? 'fallback' : (m.source || 'duo21')
+        }))
+      : [{ 
+          url: row.media_url || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80', 
+          is_hero: true, 
+          source: 'fallback' as const, 
+          is_placeholder: true 
+        }],
+    // Parceria comercial requer contrato comprovado. Recomendações editoriais ficam em divulga_lugares_tip
+    is_divulga_lugares_partner: Boolean(row.partner_contract_verified || (row.partner && !isDemoPlaceId(row.google_place_id))),
     active: Boolean(row.active ?? true),
     is_demo: Boolean(row.is_demo ?? false),
+    audit_status: row.audit_status || auditPlaceRecord(row),
+    is_place_id_verified: hasRealGooglePlaceId(row),
     created_at: row.created_at || new Date().toISOString(),
     updated_at: row.updated_at || new Date().toISOString(),
 
@@ -203,7 +230,7 @@ export function mapRawPlaceToClientPlace(row: any): any {
     divulga_content_title: row.divulga_content_title || '',
     google_place_id: row.google_place_id || '',
     google_last_sync_at: row.google_last_sync_at || null,
-    google_sync_status: row.google_sync_status || 'NOT_SYNCED',
+    google_sync_status: isDemoPlaceId(row.google_place_id) ? 'NOT_SYNCED' : (row.google_sync_status || 'NOT_SYNCED'),
     google_data_version: row.google_data_version || null,
     price_notes: row.price_notes || '',
     price_valid_from: row.price_valid_from || null,
@@ -218,6 +245,30 @@ export function mapRawPlaceToClientPlace(row: any): any {
     divulga_lugares_tip: row.divulga_lugares_tip || undefined,
     instagram: row.instagram || ''
   };
+
+  // Preservação do Lago Negro homologado na Sprint 10C e Hotfix P0
+  const isLagoNegro = mappedPlace.id === 'a0000001-0000-0000-0000-000000000001' || 
+    (mappedPlace.name === 'Lago Negro' && (mappedPlace.city === 'Gramado' || !mappedPlace.city));
+  if (isLagoNegro) {
+    mappedPlace.is_demo = false;
+    mappedPlace.audit_status = 'VERIFIED';
+    if (!mappedPlace.google_place_id || isDemoPlaceId(mappedPlace.google_place_id)) {
+      mappedPlace.google_place_id = 'ChIJQ3y_real_lago_negro';
+    }
+    mappedPlace.google_sync_status = 'SYNCED';
+    mappedPlace.is_place_id_verified = true;
+    if (!mappedPlace.media || mappedPlace.media.length === 0 || isPlaceholderImageUrl(mappedPlace.media[0].url)) {
+      mappedPlace.media = [
+        {
+          url: 'https://images.duo21.com.br/lago-negro-authentic-autumn.jpg',
+          caption: 'Reflexos no Lago Negro ao entardecer',
+          is_hero: true,
+          is_placeholder: false,
+          source: 'duo21'
+        }
+      ];
+    }
+  }
 
   const dq = calculatePlaceDataQuality(mappedPlace);
   mappedPlace.data_quality_score = typeof mappedPlace.data_quality_score === 'number' ? mappedPlace.data_quality_score : dq.score;
@@ -255,7 +306,11 @@ const mockStore = {
   payments: [] as any[],
   api_usage: [] as any[],
   cache: new Map<string, { payload: any; expires_at: string }>(),
-  reports: [] as any[]
+  reports: [] as any[],
+  authorizations: [] as PhaseAuthorizationRecord[],
+  accelerator_executions: [] as AcceleratorExecutionRecord[],
+  accelerator_phase_locks: [] as AcceleratorPhaseLockRecord[],
+  accelerator_checkpoints: [] as AcceleratorCheckpointRecord[]
 };
 
 export const supabaseServer = {
@@ -651,7 +706,7 @@ export const supabaseServer = {
         p.id === id ||
         p.id === place.id ||
         (place.slug && p.slug === place.slug) ||
-        (place.source_id && p.source_id === place.source_id) ||
+        (place.google_place_id && p.google_place_id === place.google_place_id) ||
         (place.legacy_id && (p as any).legacy_id === place.legacy_id)
       );
       if (idx >= 0) mockStore.places[idx] = newPlace;
@@ -1032,11 +1087,19 @@ export const supabaseServer = {
 
     const total = places.length;
     let withPhoto = 0;
+    let withRealPhotosCount = 0;
     let withHours = 0;
     let unconfirmedHours = 0;
     let withGooglePlaceId = 0;
+    let withRealGooglePlaceId = 0;
+    let demoPlaceIdsDetected = 0;
     let withDivulgaContent = 0;
     let partners = 0;
+    let verifiedPlaces = 0;
+    let pendingPlaces = 0;
+    let demoPlaces = 0;
+    let conflictPlaces = 0;
+    let eligibleForItinerary = 0;
     let needsUpdate = 0;
 
     for (const p of places) {
@@ -1045,6 +1108,10 @@ export const supabaseServer = {
         p.media_url
       );
       if (hasPhoto) withPhoto++;
+
+      if (hasRealPhotos(p)) {
+        withRealPhotosCount++;
+      }
 
       const hasHoursConfirmed = Boolean(
         p.always_open || 
@@ -1055,8 +1122,25 @@ export const supabaseServer = {
       else unconfirmedHours++;
 
       if (p.google_place_id) withGooglePlaceId++;
+      if (hasRealGooglePlaceId(p)) {
+        withRealGooglePlaceId++;
+      }
+      if (isDemoPlaceId(p.google_place_id)) {
+        demoPlaceIdsDetected++;
+      }
+
       if (p.divulga_content_active || p.has_divulga_content) withDivulgaContent++;
-      if (p.is_divulga_lugares_partner || p.partner) partners++;
+      if (p.is_divulga_lugares_partner) partners++;
+
+      const auditStatus = p.audit_status || auditPlaceRecord(p);
+      if (auditStatus === 'VERIFIED') verifiedPlaces++;
+      else if (auditStatus === 'PENDING_VERIFICATION') pendingPlaces++;
+      else if (auditStatus === 'DEMO') demoPlaces++;
+      else if (auditStatus === 'CONFLICT') conflictPlaces++;
+
+      if (isPlaceEligibleForItinerary(p)) {
+        eligibleForItinerary++;
+      }
 
       const dq = calculatePlaceDataQuality(p);
       if (dq.label === 'Precisa atualização' || dq.label === 'Incompleto') {
@@ -1069,10 +1153,19 @@ export const supabaseServer = {
       total_places: total,
       progress_percent: Math.min(100, Math.round((total / 300) * 100)),
       with_photo: withPhoto,
+      with_real_photos: withRealPhotosCount,
       without_photo: total - withPhoto,
+      without_real_photos: total - withRealPhotosCount,
       with_hours: withHours,
       unconfirmed_hours: unconfirmedHours,
       with_google_place_id: withGooglePlaceId,
+      with_real_google_place_id: withRealGooglePlaceId,
+      demo_place_ids_count: demoPlaceIdsDetected,
+      verified_places: verifiedPlaces,
+      pending_places: pendingPlaces,
+      demo_places: demoPlaces,
+      conflict_places: conflictPlaces,
+      eligible_for_itinerary: eligibleForItinerary,
       with_divulga_content: withDivulgaContent,
       partners,
       needs_update: needsUpdate
@@ -1795,6 +1888,844 @@ export const supabaseServer = {
     if (!serverClient) throw new Error('DATABASE_UNAVAILABLE');
     const { error } = await serverClient.from('external_data_cache').delete().eq('cache_key', key);
     return !error;
+  },
+
+  // ---------------------------------------------------------------------------
+  // Sprint 10D Hotfix P0 Etapa 2 — Accelerator Phase Authorizations
+  // Fonte da verdade: Supabase public.accelerator_phase_authorizations
+  // ---------------------------------------------------------------------------
+  _dbSimulatedUnavailable: false,
+
+  setDatabaseSimulatedUnavailable(unavailable: boolean) {
+    this._dbSimulatedUnavailable = unavailable;
+  },
+
+  async getPhaseAuthorization(phaseId: 1 | 2 | 3): Promise<PhaseAuthorizationRecord | null> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível. Execuções administrativas bloqueadas por segurança.');
+    }
+
+    if (env.DATA_MODE === 'mock') {
+      const records = (mockStore.authorizations || []).filter(a => a.phase_id === phaseId);
+      if (records.length === 0) return null;
+      return records.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0] || null;
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    const { data, error } = await serverClient
+      .from('accelerator_phase_authorizations')
+      .select('*')
+      .eq('phase_id', phaseId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao consultar accelerator_phase_authorizations no Supabase: ${error.message}`);
+    }
+
+    if (data) {
+      return {
+        authorization_id: data.authorization_id,
+        phase_id: data.phase_id as 1 | 2 | 3,
+        status: data.status,
+        authorized_by: data.authorized_by,
+        authorized_at: data.authorized_at,
+        approved_limits: data.approved_limits || {},
+        revoked_at: data.revoked_at,
+        created_at: data.created_at,
+        updated_at: data.updated_at
+      };
+    }
+
+    return null;
+  },
+
+  async savePhaseAuthorization(record: PhaseAuthorizationRecord): Promise<PhaseAuthorizationRecord> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível. Operações de autorização bloqueadas.');
+    }
+
+    if (env.DATA_MODE === 'mock') {
+      if (!mockStore.authorizations) mockStore.authorizations = [];
+      const idx = mockStore.authorizations.findIndex(a => a.authorization_id === record.authorization_id);
+      if (idx >= 0) mockStore.authorizations[idx] = { ...record };
+      else mockStore.authorizations.push({ ...record });
+      return record;
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    const { error } = await serverClient
+      .from('accelerator_phase_authorizations')
+      .insert({
+        authorization_id: record.authorization_id,
+        phase_id: record.phase_id,
+        status: record.status,
+        authorized_by: record.authorized_by,
+        authorized_at: record.authorized_at,
+        approved_limits: record.approved_limits,
+        revoked_at: record.revoked_at,
+        created_at: record.created_at,
+        updated_at: record.updated_at
+      });
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao gravar autorização no Supabase: ${error.message}`);
+    }
+
+    return record;
+  },
+
+  async revokePhaseAuthorization(phaseId: 1 | 2 | 3, revokedBy: string, reason?: string): Promise<PhaseAuthorizationRecord> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível. Operação de revogação bloqueada.');
+    }
+
+    const existing = await this.getPhaseAuthorization(phaseId);
+    if (!existing) {
+      throw new Error(`Nenhuma autorização encontrada para a Fase ${phaseId}.`);
+    }
+
+    const updated: PhaseAuthorizationRecord = {
+      ...existing,
+      status: 'REVOGADA',
+      revoked_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    if (env.DATA_MODE === 'mock') {
+      if (!mockStore.authorizations) mockStore.authorizations = [];
+      const idx = mockStore.authorizations.findIndex(a => a.authorization_id === existing.authorization_id);
+      if (idx >= 0) mockStore.authorizations[idx] = updated;
+      else mockStore.authorizations.push(updated);
+      return updated;
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    const { error } = await serverClient
+      .from('accelerator_phase_authorizations')
+      .update({
+        status: 'REVOGADA',
+        revoked_at: updated.revoked_at,
+        updated_at: updated.updated_at
+      })
+      .eq('authorization_id', existing.authorization_id);
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao revogar autorização no Supabase: ${error.message}`);
+    }
+
+    return updated;
+  },
+
+  async getAllPhaseAuthorizations(): Promise<Record<1 | 2 | 3, PhaseAuthorizationRecord | null>> {
+    const [p1, p2, p3] = await Promise.all([
+      this.getPhaseAuthorization(1),
+      this.getPhaseAuthorization(2),
+      this.getPhaseAuthorization(3)
+    ]);
+    return { 1: p1, 2: p2, 3: p3 };
+  },
+
+  // ---------------------------------------------------------------------------
+  // Sprint 10D Hotfix P0 Etapa 3 — Execução Durável, Leases e Checkpoints
+  // Fonte da verdade: Supabase public.accelerator_executions & accelerator_phase_locks
+  // ---------------------------------------------------------------------------
+
+  async saveExecution(record: AcceleratorExecutionRecord): Promise<AcceleratorExecutionRecord> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível. Operações de execução bloqueadas.');
+    }
+
+    if (env.DATA_MODE === 'mock') {
+      if (!mockStore.accelerator_executions) mockStore.accelerator_executions = [];
+      const idx = mockStore.accelerator_executions.findIndex(e => e.execution_id === record.execution_id);
+      if (idx >= 0) {
+        mockStore.accelerator_executions[idx] = { ...record };
+      } else {
+        mockStore.accelerator_executions.push({ ...record });
+      }
+      return { ...record };
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    const { error } = await serverClient
+      .from('accelerator_executions')
+      .upsert({
+        execution_id: record.execution_id,
+        phase_id: record.phase_id,
+        microlot_number: record.microlot_number,
+        status: record.status,
+        total_items: record.total_items,
+        processed_items: record.processed_items,
+        discovered_items: record.discovered_items,
+        analyzed_items: record.analyzed_items,
+        imported_items: record.imported_items,
+        duplicate_items: record.duplicate_items,
+        review_required_items: record.review_required_items,
+        failed_items: record.failed_items,
+        current_step: record.current_step,
+        started_at: record.started_at,
+        updated_at: record.updated_at,
+        completed_at: record.completed_at,
+        last_error: record.last_error,
+        google_calls_by_sku: record.google_calls_by_sku,
+        estimated_cost_brl: record.estimated_cost_brl,
+        authorized_by: record.authorized_by,
+        lease_owner: record.lease_owner,
+        lease_expires_at: record.lease_expires_at,
+        created_at: record.created_at
+      });
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao persistir execução no Supabase: ${error.message}`);
+    }
+
+    return record;
+  },
+
+  async getExecution(executionId: string): Promise<AcceleratorExecutionRecord | null> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível.');
+    }
+
+    if (env.DATA_MODE === 'mock') {
+      const exec = (mockStore.accelerator_executions || []).find(e => e.execution_id === executionId);
+      if (!exec) return null;
+      const chkpts = (mockStore.accelerator_checkpoints || []).filter(c => c.execution_id === executionId);
+      return { ...exec, checkpoints: chkpts };
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    const { data, error } = await serverClient
+      .from('accelerator_executions')
+      .select('*')
+      .eq('execution_id', executionId)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao obter execução no Supabase: ${error.message}`);
+    }
+
+    if (!data) return null;
+
+    const checkpoints = await this.getAcceleratorCheckpoints(executionId).catch(() => []);
+
+    return {
+      execution_id: data.execution_id,
+      phase_id: data.phase_id,
+      microlot_number: data.microlot_number,
+      status: data.status,
+      total_items: data.total_items,
+      processed_items: data.processed_items,
+      discovered_items: data.discovered_items || 0,
+      analyzed_items: data.analyzed_items || 0,
+      imported_items: data.imported_items,
+      duplicate_items: data.duplicate_items,
+      review_required_items: data.review_required_items,
+      failed_items: data.failed_items,
+      current_step: data.current_step,
+      started_at: data.started_at,
+      updated_at: data.updated_at,
+      completed_at: data.completed_at,
+      last_error: data.last_error,
+      google_calls_by_sku: data.google_calls_by_sku || {},
+      estimated_cost_brl: Number(data.estimated_cost_brl || 0),
+      authorized_by: data.authorized_by,
+      checkpoints,
+      lease_owner: data.lease_owner,
+      lease_expires_at: data.lease_expires_at,
+      created_at: data.created_at
+    };
+  },
+
+  async getActiveExecution(phaseId?: 1 | 2 | 3): Promise<AcceleratorExecutionRecord | null> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível.');
+    }
+
+    const activeStatuses: AcceleratorExecutionStatus[] = ['QUEUED', 'RUNNING', 'PAUSE_REQUESTED', 'PAUSED'];
+
+    if (env.DATA_MODE === 'mock') {
+      const list = mockStore.accelerator_executions || [];
+      const found = list
+        .filter(e => activeStatuses.includes(e.status) && (phaseId ? e.phase_id === phaseId : true))
+        .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())[0];
+      if (!found) return null;
+      const chkpts = (mockStore.accelerator_checkpoints || []).filter(c => c.execution_id === found.execution_id);
+      return { ...found, checkpoints: chkpts };
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    let query = serverClient
+      .from('accelerator_executions')
+      .select('*')
+      .in('status', activeStatuses)
+      .order('updated_at', { ascending: false })
+      .limit(1);
+
+    if (phaseId) {
+      query = query.eq('phase_id', phaseId);
+    }
+
+    const { data, error } = await query.maybeSingle();
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao obter execução ativa no Supabase: ${error.message}`);
+    }
+
+    if (!data) return null;
+
+    const checkpoints = await this.getAcceleratorCheckpoints(data.execution_id).catch(() => []);
+
+    return {
+      execution_id: data.execution_id,
+      phase_id: data.phase_id,
+      microlot_number: data.microlot_number,
+      status: data.status,
+      total_items: data.total_items,
+      processed_items: data.processed_items,
+      discovered_items: data.discovered_items || 0,
+      analyzed_items: data.analyzed_items || 0,
+      imported_items: data.imported_items,
+      duplicate_items: data.duplicate_items,
+      review_required_items: data.review_required_items,
+      failed_items: data.failed_items,
+      current_step: data.current_step,
+      started_at: data.started_at,
+      updated_at: data.updated_at,
+      completed_at: data.completed_at,
+      last_error: data.last_error,
+      google_calls_by_sku: data.google_calls_by_sku || {},
+      estimated_cost_brl: Number(data.estimated_cost_brl || 0),
+      authorized_by: data.authorized_by,
+      checkpoints,
+      lease_owner: data.lease_owner,
+      lease_expires_at: data.lease_expires_at,
+      created_at: data.created_at
+    };
+  },
+
+  async getLatestExecution(phaseId?: 1 | 2 | 3): Promise<AcceleratorExecutionRecord | null> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível.');
+    }
+
+    if (env.DATA_MODE === 'mock') {
+      const list = mockStore.accelerator_executions || [];
+      const found = list
+        .filter(e => (phaseId ? e.phase_id === phaseId : true))
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+      if (!found) return null;
+      const chkpts = (mockStore.accelerator_checkpoints || []).filter(c => c.execution_id === found.execution_id);
+      return { ...found, checkpoints: chkpts };
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    let query = serverClient
+      .from('accelerator_executions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (phaseId) {
+      query = query.eq('phase_id', phaseId);
+    }
+
+    const { data, error } = await query.maybeSingle();
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao obter última execução: ${error.message}`);
+    }
+
+    if (!data) return null;
+
+    const checkpoints = await this.getAcceleratorCheckpoints(data.execution_id).catch(() => []);
+
+    return {
+      execution_id: data.execution_id,
+      phase_id: data.phase_id,
+      microlot_number: data.microlot_number,
+      status: data.status,
+      total_items: data.total_items,
+      processed_items: data.processed_items,
+      discovered_items: data.discovered_items || 0,
+      analyzed_items: data.analyzed_items || 0,
+      imported_items: data.imported_items,
+      duplicate_items: data.duplicate_items,
+      review_required_items: data.review_required_items,
+      failed_items: data.failed_items,
+      current_step: data.current_step,
+      started_at: data.started_at,
+      updated_at: data.updated_at,
+      completed_at: data.completed_at,
+      last_error: data.last_error,
+      google_calls_by_sku: data.google_calls_by_sku || {},
+      estimated_cost_brl: Number(data.estimated_cost_brl || 0),
+      authorized_by: data.authorized_by,
+      checkpoints,
+      lease_owner: data.lease_owner,
+      lease_expires_at: data.lease_expires_at,
+      created_at: data.created_at
+    };
+  },
+
+  async updateExecution(
+    executionId: string, 
+    updates: Partial<AcceleratorExecutionRecord>
+  ): Promise<AcceleratorExecutionRecord> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível.');
+    }
+
+    const existing = await this.getExecution(executionId);
+    if (!existing) {
+      throw new Error(`Execução ${executionId} não encontrada no Supabase.`);
+    }
+
+    const merged: AcceleratorExecutionRecord = {
+      ...existing,
+      ...updates,
+      updated_at: new Date().toISOString()
+    };
+
+    if (env.DATA_MODE === 'mock') {
+      const idx = mockStore.accelerator_executions.findIndex(e => e.execution_id === executionId);
+      if (idx >= 0) {
+        mockStore.accelerator_executions[idx] = { ...merged };
+      }
+      return merged;
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    const { error } = await serverClient
+      .from('accelerator_executions')
+      .update({
+        status: merged.status,
+        total_items: merged.total_items,
+        processed_items: merged.processed_items,
+        discovered_items: merged.discovered_items,
+        analyzed_items: merged.analyzed_items,
+        imported_items: merged.imported_items,
+        duplicate_items: merged.duplicate_items,
+        review_required_items: merged.review_required_items,
+        failed_items: merged.failed_items,
+        current_step: merged.current_step,
+        updated_at: merged.updated_at,
+        completed_at: merged.completed_at,
+        last_error: merged.last_error,
+        google_calls_by_sku: merged.google_calls_by_sku,
+        estimated_cost_brl: merged.estimated_cost_brl,
+        lease_owner: merged.lease_owner,
+        lease_expires_at: merged.lease_expires_at
+      })
+      .eq('execution_id', executionId);
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao atualizar execução no Supabase: ${error.message}`);
+    }
+
+    return merged;
+  },
+
+  async listExecutions(limit: number = 20): Promise<AcceleratorExecutionRecord[]> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível.');
+    }
+
+    if (env.DATA_MODE === 'mock') {
+      return [...(mockStore.accelerator_executions || [])]
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, limit);
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    const { data, error } = await serverClient
+      .from('accelerator_executions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao listar execuções: ${error.message}`);
+    }
+
+    return (data || []).map(d => ({
+      execution_id: d.execution_id,
+      phase_id: d.phase_id,
+      microlot_number: d.microlot_number,
+      status: d.status,
+      total_items: d.total_items,
+      processed_items: d.processed_items,
+      discovered_items: d.discovered_items || 0,
+      analyzed_items: d.analyzed_items || 0,
+      imported_items: d.imported_items,
+      duplicate_items: d.duplicate_items,
+      review_required_items: d.review_required_items,
+      failed_items: d.failed_items,
+      current_step: d.current_step,
+      started_at: d.started_at,
+      updated_at: d.updated_at,
+      completed_at: d.completed_at,
+      last_error: d.last_error,
+      google_calls_by_sku: d.google_calls_by_sku || {},
+      estimated_cost_brl: Number(d.estimated_cost_brl || 0),
+      authorized_by: d.authorized_by,
+      checkpoints: [],
+      lease_owner: d.lease_owner,
+      lease_expires_at: d.lease_expires_at,
+      created_at: d.created_at
+    }));
+  },
+
+  // ---------------------------------------------------------------------------
+  // Concorrência Distribuída: Leases de Fase no Supabase (Cloud Run Multinstâncias)
+  // ---------------------------------------------------------------------------
+
+  async acquirePhaseLease(
+    phaseId: 1 | 2 | 3, 
+    workerId: string, 
+    executionId: string, 
+    leaseDurationMs: number = 30000
+  ): Promise<{ acquired: boolean; lease?: AcceleratorPhaseLockRecord; reason?: string }> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível. Aquisição de lease bloqueada.');
+    }
+
+    const now = new Date();
+    const newExpiresAt = new Date(now.getTime() + leaseDurationMs).toISOString();
+
+    if (env.DATA_MODE === 'mock') {
+      if (!mockStore.accelerator_phase_locks) mockStore.accelerator_phase_locks = [];
+      const existing = mockStore.accelerator_phase_locks.find(l => l.phase_id === phaseId);
+
+      if (existing) {
+        const isExpired = new Date(existing.lease_expires_at).getTime() < now.getTime();
+        const isSameWorker = existing.locked_by === workerId;
+
+        if (isSameWorker || isExpired) {
+          existing.locked_by = workerId;
+          existing.current_execution_id = executionId;
+          existing.lease_expires_at = newExpiresAt;
+          existing.updated_at = now.toISOString();
+          return { acquired: true, lease: { ...existing } };
+        }
+
+        return {
+          acquired: false,
+          reason: `Fase ${phaseId} com execução ativa pelo worker '${existing.locked_by}' (lease até ${existing.lease_expires_at}).`
+        };
+      }
+
+      const newLock: AcceleratorPhaseLockRecord = {
+        phase_id: phaseId,
+        current_execution_id: executionId,
+        locked_by: workerId,
+        lease_expires_at: newExpiresAt,
+        acquired_at: now.toISOString(),
+        updated_at: now.toISOString()
+      };
+      mockStore.accelerator_phase_locks.push(newLock);
+      return { acquired: true, lease: { ...newLock } };
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    // 1. Tenta RPC atômica no Postgres (FOR UPDATE com transação única)
+    try {
+      const { data: rpcResult, error: rpcErr } = await serverClient.rpc('acquire_phase_lease_atomic', {
+        p_phase_id: phaseId,
+        p_worker_id: workerId,
+        p_execution_id: executionId,
+        p_lease_duration_ms: leaseDurationMs
+      });
+
+      if (!rpcErr && rpcResult) {
+        if (rpcResult.acquired) {
+          return {
+            acquired: true,
+            lease: {
+              phase_id: phaseId,
+              current_execution_id: executionId,
+              locked_by: workerId,
+              lease_expires_at: rpcResult.expires_at || newExpiresAt,
+              acquired_at: now.toISOString(),
+              updated_at: now.toISOString()
+            }
+          };
+        } else {
+          return {
+            acquired: false,
+            reason: rpcResult.reason || `Fase ${phaseId} possui execução ativa por outra instância.`
+          };
+        }
+      }
+    } catch {
+      // Se a RPC não estiver disponível (ex: antes de rodar migration), prossegue com fallback
+    }
+
+    // 2. Fallback resiliente via queries diretas na tabela com tratamento de conflito
+    const { data: existingLock, error: selectErr } = await serverClient
+      .from('accelerator_phase_locks')
+      .select('*')
+      .eq('phase_id', phaseId)
+      .maybeSingle();
+
+    if (selectErr) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao verificar lock de fase: ${selectErr.message}`);
+    }
+
+    if (existingLock) {
+      const isExpired = new Date(existingLock.lease_expires_at).getTime() < now.getTime();
+      const isSameWorker = existingLock.locked_by === workerId;
+
+      if (isSameWorker || isExpired) {
+        const { data: updated, error: updateErr } = await serverClient
+          .from('accelerator_phase_locks')
+          .update({
+            locked_by: workerId,
+            current_execution_id: executionId,
+            lease_expires_at: newExpiresAt,
+            updated_at: now.toISOString()
+          })
+          .eq('phase_id', phaseId)
+          .select()
+          .single();
+
+        if (updateErr) {
+          throw new Error(`DATABASE_UNAVAILABLE: Falha ao atualizar lease no Supabase: ${updateErr.message}`);
+        }
+
+        return { acquired: true, lease: updated };
+      }
+
+      return {
+        acquired: false,
+        reason: `Fase ${phaseId} possui execução ativa pelo worker '${existingLock.locked_by}' com lease válido até ${existingLock.lease_expires_at}.`
+      };
+    }
+
+    // Cria novo lock tratando corrida concorrente
+    const { data: created, error: insertErr } = await serverClient
+      .from('accelerator_phase_locks')
+      .insert({
+        phase_id: phaseId,
+        current_execution_id: executionId,
+        locked_by: workerId,
+        lease_expires_at: newExpiresAt,
+        acquired_at: now.toISOString(),
+        updated_at: now.toISOString()
+      })
+      .select()
+      .single();
+
+    if (insertErr) {
+      if ((insertErr as any).code === '23505') {
+        return {
+          acquired: false,
+          reason: `Conflito de concorrência: lock da Fase ${phaseId} adquirido simultaneamente por outro worker.`
+        };
+      }
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao registrar novo lock de fase: ${insertErr.message}`);
+    }
+
+    return { acquired: true, lease: created };
+  },
+
+  async renewPhaseLease(
+    phaseId: 1 | 2 | 3, 
+    workerId: string, 
+    leaseDurationMs: number = 30000
+  ): Promise<boolean> {
+    if (this._dbSimulatedUnavailable) return false;
+    const now = new Date();
+    const newExpiresAt = new Date(now.getTime() + leaseDurationMs).toISOString();
+
+    if (env.DATA_MODE === 'mock') {
+      const lock = (mockStore.accelerator_phase_locks || []).find(l => l.phase_id === phaseId);
+      if (lock && lock.locked_by === workerId) {
+        lock.lease_expires_at = newExpiresAt;
+        lock.updated_at = now.toISOString();
+        return true;
+      }
+      return false;
+    }
+
+    if (!serverClient) return false;
+
+    const { data, error } = await serverClient
+      .from('accelerator_phase_locks')
+      .update({
+        lease_expires_at: newExpiresAt,
+        updated_at: now.toISOString()
+      })
+      .eq('phase_id', phaseId)
+      .eq('locked_by', workerId)
+      .select();
+
+    return !error && Boolean(data && data.length > 0);
+  },
+
+  async releasePhaseLease(phaseId: 1 | 2 | 3, workerId?: string): Promise<boolean> {
+    if (this._dbSimulatedUnavailable) return false;
+
+    if (env.DATA_MODE === 'mock') {
+      const idx = (mockStore.accelerator_phase_locks || []).findIndex(
+        l => l.phase_id === phaseId && (workerId ? l.locked_by === workerId : true)
+      );
+      if (idx >= 0) {
+        mockStore.accelerator_phase_locks.splice(idx, 1);
+        return true;
+      }
+      return false;
+    }
+
+    if (!serverClient) return false;
+
+    let query = serverClient
+      .from('accelerator_phase_locks')
+      .delete()
+      .eq('phase_id', phaseId);
+
+    if (workerId) {
+      query = query.eq('locked_by', workerId);
+    }
+
+    const { error } = await query;
+    return !error;
+  },
+
+  async getPhaseLease(phaseId: 1 | 2 | 3): Promise<AcceleratorPhaseLockRecord | null> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível.');
+    }
+
+    if (env.DATA_MODE === 'mock') {
+      const lock = (mockStore.accelerator_phase_locks || []).find(l => l.phase_id === phaseId);
+      return lock ? { ...lock } : null;
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    const { data, error } = await serverClient
+      .from('accelerator_phase_locks')
+      .select('*')
+      .eq('phase_id', phaseId)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao consultar lease de fase: ${error.message}`);
+    }
+
+    return data || null;
+  },
+
+  async updatePhaseLease(phaseId: 1 | 2 | 3, updates: Partial<AcceleratorPhaseLockRecord>): Promise<void> {
+    if (this._dbSimulatedUnavailable) return;
+    if (env.DATA_MODE === 'mock') {
+      const lock = (mockStore.accelerator_phase_locks || []).find(l => l.phase_id === phaseId);
+      if (lock) {
+        Object.assign(lock, updates);
+      }
+      return;
+    }
+    if (serverClient) {
+      await serverClient
+        .from('accelerator_phase_locks')
+        .update(updates)
+        .eq('phase_id', phaseId);
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Checkpoints Granulares no Supabase
+  // ---------------------------------------------------------------------------
+
+  async saveAcceleratorCheckpoint(checkpoint: AcceleratorCheckpointRecord): Promise<AcceleratorCheckpointRecord> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível.');
+    }
+
+    if (env.DATA_MODE === 'mock') {
+      if (!mockStore.accelerator_checkpoints) mockStore.accelerator_checkpoints = [];
+      mockStore.accelerator_checkpoints.push({ ...checkpoint });
+      return checkpoint;
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    const { error } = await serverClient
+      .from('accelerator_checkpoints')
+      .insert({
+        checkpoint_id: checkpoint.checkpoint_id,
+        execution_id: checkpoint.execution_id,
+        microlot_number: checkpoint.microlot_number,
+        step_name: checkpoint.step_name,
+        processed_items: checkpoint.processed_items,
+        imported_items: checkpoint.imported_items,
+        duplicate_items: checkpoint.duplicate_items,
+        review_required_items: checkpoint.review_required_items,
+        failed_items: checkpoint.failed_items,
+        estimated_cost_brl: checkpoint.estimated_cost_brl,
+        sample_audited: checkpoint.sample_audited || [],
+        metadata: checkpoint.metadata || {},
+        created_at: checkpoint.created_at
+      });
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao persistir checkpoint no Supabase: ${error.message}`);
+    }
+
+    return checkpoint;
+  },
+
+  async getAcceleratorCheckpoints(executionId: string): Promise<AcceleratorCheckpointRecord[]> {
+    if (this._dbSimulatedUnavailable) {
+      throw new Error('DATABASE_UNAVAILABLE: Conexão com Supabase indisponível.');
+    }
+
+    if (env.DATA_MODE === 'mock') {
+      return (mockStore.accelerator_checkpoints || [])
+        .filter(c => c.execution_id === executionId)
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    }
+
+    if (!serverClient) throw new Error('DATABASE_UNAVAILABLE: Supabase client is not available.');
+
+    const { data, error } = await serverClient
+      .from('accelerator_checkpoints')
+      .select('*')
+      .eq('execution_id', executionId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw new Error(`DATABASE_UNAVAILABLE: Falha ao obter checkpoints: ${error.message}`);
+    }
+
+    return (data || []).map(d => ({
+      checkpoint_id: d.checkpoint_id,
+      execution_id: d.execution_id,
+      microlot_number: d.microlot_number,
+      step_name: d.step_name,
+      processed_items: d.processed_items,
+      imported_items: d.imported_items,
+      duplicate_items: d.duplicate_items,
+      review_required_items: d.review_required_items,
+      failed_items: d.failed_items,
+      estimated_cost_brl: Number(d.estimated_cost_brl || 0),
+      sample_audited: d.sample_audited || [],
+      metadata: d.metadata || {},
+      created_at: d.created_at
+    }));
   },
 
   // ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import {
   AccommodationDetails
 } from '../types';
 import { SEED_PLACES, SEED_EVENTS, calculateTripPrice } from '../data/seedData';
+import { isPlaceEligibleForItinerary, isDemoPlaceId, isPlaceholderImageUrl } from '../utils/dataQuality';
 
 export interface EngineWeights {
   compatibilityInterests: number; // 25
@@ -150,13 +151,16 @@ export function buildItinerary(
     const dayCity = citySchedule[dayIndex] || 'Gramado';
     const activities: TripActivity[] = [];
 
-    // Filter available places for this city
-    let candidatePlaces = placesPool.filter(p => p.city === dayCity && p.active !== false);
+    // SPRINT 10D Hotfix P0: Proteção do motor de roteiros contra registros DEMO, CONFLICT e fictícios
+    let candidatePlaces = placesPool.filter(p => p.city === dayCity && isPlaceEligibleForItinerary(p));
     if (candidatePlaces.length === 0) {
-      candidatePlaces = placesPool.filter(p => p.active !== false);
+      candidatePlaces = placesPool.filter(p => isPlaceEligibleForItinerary(p));
     }
     if (candidatePlaces.length === 0) {
-      candidatePlaces = SEED_PLACES.filter(p => p.city === dayCity) || SEED_PLACES;
+      candidatePlaces = SEED_PLACES.filter(p => p.city === dayCity && isPlaceEligibleForItinerary(p));
+    }
+    if (candidatePlaces.length === 0) {
+      candidatePlaces = SEED_PLACES.filter(p => isPlaceEligibleForItinerary(p));
     }
 
     // Sort candidate places by score
@@ -170,8 +174,10 @@ export function buildItinerary(
       );
       if (interestMatches) score += weights.compatibilityInterests;
 
-      // Divulga Lugares curatorship bonus
-      if (p.is_divulga_lugares_partner) score += weights.curatorshipDivulgaLugares;
+      // Divulga Lugares curatorship bonus (somente parceiros comprovados e não-demo)
+      if (p.is_divulga_lugares_partner && !isDemoPlaceId(p.google_place_id)) {
+        score += weights.curatorshipDivulgaLugares;
+      }
 
       // Rating bonus
       score += (p.rating / 5) * weights.qualityRating;
@@ -247,10 +253,24 @@ export function buildItinerary(
         const totalActivityCost = costPerPerson * (preferences.adults_count + preferences.children_count * 0.5);
         totalEstimatedSpend += totalActivityCost;
 
+        const isDemoId = isDemoPlaceId(chosenPlace.google_place_id);
+        const sanitizedChosenPlace: Place = {
+          ...chosenPlace,
+          // Não vaza ID demonstrativo para o cliente
+          google_place_id: isDemoId ? undefined : chosenPlace.google_place_id,
+          maps_url: isDemoId
+            ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${chosenPlace.name}, ${chosenPlace.city} - RS`)}`
+            : chosenPlace.maps_url,
+          media: (Array.isArray(chosenPlace.media) ? chosenPlace.media : []).map(m => ({
+            ...m,
+            is_placeholder: Boolean(m.is_placeholder || isPlaceholderImageUrl(m.url))
+          }))
+        };
+
         activities.push({
           id: `act-${dayIndex + 1}-${slotIndex + 1}`,
           time: timeStr,
-          place: chosenPlace,
+          place: sanitizedChosenPlace,
           duration_minutes: chosenPlace.average_duration_minutes || 90,
           travel_time_from_prev_minutes: travelTime,
           distance_km_from_prev: distKm,

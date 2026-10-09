@@ -24,8 +24,12 @@ import {
   TrendingUp,
   FileCheck2,
   Lock,
-  ArrowRight
+  ArrowRight,
+  StopCircle,
+  Activity,
+  CheckSquare
 } from 'lucide-react';
+import { AcceleratorExecutionRecord, AcceleratorExecutionStatus } from '../types';
 
 interface CityTargetDetail {
   current: number;
@@ -43,6 +47,8 @@ interface PhaseTargetConfig {
   isCompleted: boolean;
   authorizedAt: string | null;
   completedAt: string | null;
+  statusLabel?: 'AGUARDANDO_AUTORIZACAO' | 'AUTORIZADA' | 'REVOGADA' | 'BLOQUEADA_POR_SEGURANCA' | 'ERRO';
+  authorizationRecord?: any;
 }
 
 interface SkuInvolved {
@@ -111,6 +117,8 @@ interface AcceleratorStatusResponse {
   phase3: PhaseTargetConfig;
   executionState: {
     isPaused: boolean;
+    isExecuting?: boolean;
+    databaseAvailable?: boolean;
     microlotsExecuted: number;
     plannedMicrolotsPhase1: number;
     processedInActivePhase: number;
@@ -133,6 +141,13 @@ interface AcceleratorStatusResponse {
     reason: string;
     requiresApproval: boolean;
   };
+  activeExecution?: AcceleratorExecutionRecord | null;
+  latestExecution?: AcceleratorExecutionRecord | null;
+  durableContract?: {
+    provider: string;
+    isInfrastructureConfigured: boolean;
+    operationalBlocker: string | null;
+  };
 }
 
 interface CatalogAcceleratorModalProps {
@@ -140,28 +155,42 @@ interface CatalogAcceleratorModalProps {
   onClose: () => void;
   onRefreshCatalog: () => void;
   adminApiKey: string;
+  adminSessionToken?: string | null;
 }
 
 export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = ({
   isOpen,
   onClose,
   onRefreshCatalog,
-  adminApiKey
+  adminApiKey,
+  adminSessionToken
 }) => {
   const [status, setStatus] = useState<AcceleratorStatusResponse | null>(null);
   const [isLoadingStatus, setIsLoadingStatus] = useState(false);
   const [isAuthorizing, setIsAuthorizing] = useState(false);
+  const [isRevoking, setIsRevoking] = useState(false);
   const [isExecutingMicrolot, setIsExecutingMicrolot] = useState(false);
   const [isTogglingPause, setIsTogglingPause] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [isApplyingLimits, setIsApplyingLimits] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'phases' | 'skus' | 'microlots' | 'checkpoints'>('phases');
 
-  const getHeaders = () => ({
-    'Content-Type': 'application/json',
-    'x-admin-key': adminApiKey || ''
-  });
+  const getHeaders = () => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-admin-control-plane': 'duo21'
+    };
+    if (adminApiKey) {
+      headers['x-admin-key'] = adminApiKey;
+    }
+    const token = adminSessionToken || sessionStorage.getItem('duo21_admin_session');
+    if (token) {
+      headers['x-admin-session'] = token;
+    }
+    return headers;
+  };
 
   const fetchStatus = async () => {
     setIsLoadingStatus(true);
@@ -181,11 +210,43 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
     }
   };
 
+  // Atualização automática resiliente (Polling inteligente, visibilitychange e reconexão online)
   useEffect(() => {
-    if (isOpen) {
+    if (!isOpen) return;
+
+    fetchStatus();
+
+    const isRunning = Boolean(
+      status?.executionState?.isExecuting ||
+      status?.activeExecution?.status === 'RUNNING' ||
+      status?.activeExecution?.status === 'QUEUED' ||
+      status?.activeExecution?.status === 'PAUSE_REQUESTED'
+    );
+    const intervalMs = isRunning ? 1500 : 5000;
+
+    const interval = setInterval(() => {
       fetchStatus();
-    }
-  }, [isOpen]);
+    }, intervalMs);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchStatus();
+      }
+    };
+
+    const onOnline = () => {
+      fetchStatus();
+    };
+
+    window.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('online', onOnline);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [isOpen, status?.executionState?.isExecuting, status?.activeExecution?.status]);
 
   const handleAuthorizePhase = async (phase: 1 | 2 | 3) => {
     setIsAuthorizing(true);
@@ -210,19 +271,42 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
     }
   };
 
+  const handleRevokePhase = async (phase: 1 | 2 | 3) => {
+    setIsRevoking(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch('/api/admin/accelerator/revoke-phase', {
+        method: 'POST',
+        headers: getHeaders(),
+        credentials: 'include',
+        body: JSON.stringify({ phase, reason: 'Revogação expressa pelo painel administrativo' })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao revogar autorização');
+      setSuccessMessage(data.message || `Autorização da Fase ${phase} revogada com sucesso!`);
+      await fetchStatus();
+      onRefreshCatalog();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Erro ao revogar autorização');
+    } finally {
+      setIsRevoking(false);
+    }
+  };
+
   const handleExecuteMicrolot = async () => {
     setIsExecutingMicrolot(true);
     setErrorMessage(null);
     setSuccessMessage(null);
     try {
-      const res = await fetch('/api/admin/accelerator/execute-microlot', {
+      const res = await fetch('/api/admin/accelerator/execute-microlot?async=true', {
         method: 'POST',
         headers: getHeaders(),
         credentials: 'include'
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Falha ao executar microlote');
-      setSuccessMessage(data.message || 'Microlote executado e persistido no Supabase!');
+      setSuccessMessage(data.message || 'Microlote iniciado em segundo plano! Acompanhe o progresso em tempo real.');
       await fetchStatus();
       onRefreshCatalog();
     } catch (err: any) {
@@ -236,7 +320,11 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
     if (!status) return;
     setIsTogglingPause(true);
     setErrorMessage(null);
-    const endpoint = status.executionState.isPaused ? '/api/admin/accelerator/resume' : '/api/admin/accelerator/pause';
+    const isPaused = Boolean(
+      status.executionState.isPaused || 
+      status.activeExecution?.status === 'PAUSED'
+    );
+    const endpoint = isPaused ? '/api/admin/accelerator/resume' : '/api/admin/accelerator/pause';
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -251,6 +339,27 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
       setErrorMessage(err.message || 'Erro ao pausar/retomar');
     } finally {
       setIsTogglingPause(false);
+    }
+  };
+
+  const handleCancelExecution = async () => {
+    if (!status) return;
+    setIsCancelling(true);
+    setErrorMessage(null);
+    try {
+      const res = await fetch('/api/admin/accelerator/cancel', {
+        method: 'POST',
+        headers: getHeaders(),
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao cancelar execução');
+      setSuccessMessage('Execução cancelada com sucesso e locks liberados.');
+      await fetchStatus();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Erro ao cancelar execução');
+    } finally {
+      setIsCancelling(false);
     }
   };
 
@@ -375,8 +484,12 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
                     <span className="text-[10px] font-bold uppercase text-amber-900">Fase 1</span>
                     {status.phase1.isCompleted ? (
                       <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    ) : status.phase1.isAuthorized ? (
+                    ) : status.phase1.statusLabel === 'AUTORIZADA' ? (
                       <span className="text-[9px] font-black bg-emerald-100 text-emerald-900 px-1.5 py-0.5 rounded">AUTORIZADA</span>
+                    ) : status.phase1.statusLabel === 'REVOGADA' ? (
+                      <span className="text-[9px] font-black bg-rose-100 text-rose-900 px-1.5 py-0.5 rounded">REVOGADA</span>
+                    ) : status.phase1.statusLabel === 'BLOQUEADA_POR_SEGURANCA' ? (
+                      <span className="text-[9px] font-black bg-purple-100 text-purple-900 px-1.5 py-0.5 rounded">BLOQUEADA</span>
                     ) : (
                       <Lock className="w-3.5 h-3.5 text-amber-700" />
                     )}
@@ -402,8 +515,10 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
                     <span className="text-[10px] font-bold uppercase text-slate-600">Fase 2 (Oficial)</span>
                     {status.phase2.isCompleted ? (
                       <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    ) : status.phase2.isAuthorized ? (
+                    ) : status.phase2.statusLabel === 'AUTORIZADA' ? (
                       <span className="text-[9px] font-black bg-emerald-100 text-emerald-900 px-1.5 py-0.5 rounded">AUTORIZADA</span>
+                    ) : status.phase2.statusLabel === 'REVOGADA' ? (
+                      <span className="text-[9px] font-black bg-rose-100 text-rose-900 px-1.5 py-0.5 rounded">REVOGADA</span>
                     ) : (
                       <Lock className="w-3.5 h-3.5 text-slate-400" />
                     )}
@@ -486,6 +601,295 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
                 </div>
               </div>
             </div>
+
+            {/* BARRA DE PROGRESSO EM TEMPO REAL & ESTADOS DA EXECUÇÃO (Sprint 10D Hotfix P0 — Etapa 3) */}
+            {(() => {
+              const activeExec = status.activeExecution || status.latestExecution;
+              const currentStatus: AcceleratorExecutionStatus = activeExec?.status || (status.executionState.isPaused ? 'PAUSED' : 'QUEUED');
+              const totalItems = activeExec?.total_items || 10;
+              const processedItems = activeExec?.processed_items || 0;
+              const hasTrueProgress = Boolean(activeExec && typeof activeExec.processed_items === 'number' && totalItems > 0);
+              const progressPercent = hasTrueProgress 
+                ? Math.min(100, Math.max(0, Math.round((processedItems / totalItems) * 100))) 
+                : null;
+
+              return (
+                <div className="bg-[#FAF9F6] border-2 border-[#E7DFCE] p-4 rounded-3xl space-y-3 shadow-xs">
+                  {/* Topo do Card de Execução */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Activity className="w-4 h-4 text-emerald-800" />
+                      <span className="text-xs font-black uppercase tracking-wider text-slate-800">
+                        Acompanhamento de Execução em Tempo Real
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-bold">
+                        • Microlote #{activeExec?.microlot_number || (status.executionState.microlotsExecuted + 1)} de {status.executionState.plannedMicrolotsPhase1 || 4}
+                      </span>
+                    </div>
+
+                    {/* Badge do Estado da Execução Persistente */}
+                    <div className="flex items-center gap-1.5">
+                      {currentStatus === 'QUEUED' && (
+                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                          ⏳ Na Fila (QUEUED)
+                        </span>
+                      )}
+                      {currentStatus === 'RUNNING' && (
+                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300 animate-pulse flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping inline-block" />
+                          Executando (RUNNING)
+                        </span>
+                      )}
+                      {currentStatus === 'PAUSE_REQUESTED' && (
+                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                          ⏸️ Pausa Solicitada (PAUSE_REQUESTED)
+                        </span>
+                      )}
+                      {currentStatus === 'PAUSED' && (
+                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-orange-100 text-orange-900 border border-orange-300">
+                          ⏸️ Pausado (PAUSED)
+                        </span>
+                      )}
+                      {currentStatus === 'COMPLETED' && (
+                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300">
+                          ✅ Concluído (COMPLETED)
+                        </span>
+                      )}
+                      {currentStatus === 'FAILED' && (
+                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-900 border border-rose-300">
+                          ❌ Falhou (FAILED)
+                        </span>
+                      )}
+                      {currentStatus === 'CANCELLED' && (
+                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-800 border border-slate-300">
+                          ⏹️ Cancelado (CANCELLED)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Banner "MICROLOTE CONCLUÍDO" com resumo completo */}
+                  {currentStatus === 'COMPLETED' && activeExec && (
+                    <div className="p-3.5 bg-emerald-50 border-2 border-emerald-400 rounded-2xl space-y-2 animate-in fade-in">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-5 h-5 text-emerald-700" />
+                          <h4 className="text-sm font-black text-emerald-950 uppercase tracking-wide">
+                            MICROLOTE CONCLUÍDO
+                          </h4>
+                        </div>
+                        <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
+                          Microlote #{activeExec.microlot_number}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs pt-1">
+                        <div className="bg-white/90 p-2 rounded-xl border border-emerald-200">
+                          <span className="text-[10px] text-slate-500 font-bold block">Locais Processados</span>
+                          <strong className="text-slate-800 text-sm">{activeExec.processed_items}</strong>
+                        </div>
+                        <div className="bg-white/90 p-2 rounded-xl border border-emerald-200">
+                          <span className="text-[10px] text-slate-500 font-bold block">Locais Importados</span>
+                          <strong className="text-emerald-700 text-sm">+{activeExec.imported_items}</strong>
+                        </div>
+                        <div className="bg-white/90 p-2 rounded-xl border border-emerald-200">
+                          <span className="text-[10px] text-slate-500 font-bold block">Pendentes de Revisão</span>
+                          <strong className="text-amber-800 text-sm">{activeExec.review_required_items}</strong>
+                        </div>
+                        <div className="bg-white/90 p-2 rounded-xl border border-emerald-200">
+                          <span className="text-[10px] text-slate-500 font-bold block">Duplicatas Evitadas</span>
+                          <strong className="text-slate-800 text-sm">{activeExec.duplicate_items}</strong>
+                        </div>
+                        <div className="bg-white/90 p-2 rounded-xl border border-emerald-200">
+                          <span className="text-[10px] text-slate-500 font-bold block">Custo Estimado</span>
+                          <strong className="text-emerald-900 text-sm">R$ {activeExec.estimated_cost_brl.toFixed(2)}</strong>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Banner de Falha com Retomada Segura */}
+                  {currentStatus === 'FAILED' && activeExec && (
+                    <div className="p-3.5 bg-rose-50 border-2 border-rose-300 rounded-2xl space-y-2">
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="w-5 h-5 text-rose-700" />
+                        <h4 className="text-sm font-black text-rose-950 uppercase tracking-wide">
+                          FALHA NA EXECUÇÃO DO MICROLOTE
+                        </h4>
+                      </div>
+                      <p className="text-xs text-rose-900 font-medium">
+                        {activeExec.last_error || 'Erro inesperado durante a execução. O estado anterior e checkpoints foram preservados no Supabase.'}
+                      </p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={handleTogglePause}
+                          disabled={isTogglingPause}
+                          className="px-3 py-1.5 bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                        >
+                          Retomar com Segurança a partir do Último Checkpoint
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* BARRA VISUAL DE PROGRESSO REAL */}
+                  <div className="space-y-1.5 bg-white p-3 rounded-2xl border border-slate-200">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-700">
+                        {activeExec?.current_step || 'Aguardando inicialização do lote...'}
+                      </span>
+                      <span className="font-extrabold text-[#1B4332]">
+                        {progressPercent !== null ? `${progressPercent}%` : 'Cálculo em andamento'}
+                      </span>
+                    </div>
+
+                    {progressPercent !== null ? (
+                      <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden p-0.5 border border-slate-200">
+                        <div 
+                          className="h-full bg-emerald-600 rounded-full transition-all duration-300 ease-out"
+                          style={{ width: `${progressPercent}%` }}
+                        />
+                      </div>
+                    ) : (
+                      /* Barra indeterminada quando não for possível calcular porcentagem exata */
+                      <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden border border-slate-200">
+                        <div className="h-full bg-gradient-to-r from-emerald-500 via-emerald-300 to-emerald-500 rounded-full animate-pulse w-full" />
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between text-[10px] text-slate-500">
+                      <span>Operações concluídas: <strong>{processedItems}</strong> de <strong>{totalItems}</strong></span>
+                      <span>Horário da última atualização: <strong>{activeExec?.updated_at ? new Date(activeExec.updated_at).toLocaleTimeString('pt-BR') : new Date().toLocaleTimeString('pt-BR')}</strong></span>
+                    </div>
+                  </div>
+
+                  {/* GRID DAS OPERAÇÕES DO PROCESSAMENTO (Locais descobertos, analisados, importados, etc.) */}
+                  <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-xs">
+                    <div className="p-2.5 bg-white border border-slate-200 rounded-xl">
+                      <span className="text-[10px] text-slate-500 font-bold block">Locais Descobertos</span>
+                      <span className="text-base font-black text-slate-800">{activeExec?.discovered_items ?? 0}</span>
+                    </div>
+                    <div className="p-2.5 bg-white border border-slate-200 rounded-xl">
+                      <span className="text-[10px] text-slate-500 font-bold block">Locais Analisados</span>
+                      <span className="text-base font-black text-slate-800">{activeExec?.analyzed_items ?? activeExec?.processed_items ?? 0}</span>
+                    </div>
+                    <div className="p-2.5 bg-white border border-slate-200 rounded-xl">
+                      <span className="text-[10px] text-slate-500 font-bold block">Locais Importados</span>
+                      <span className="text-base font-black text-emerald-700">+{activeExec?.imported_items ?? 0}</span>
+                    </div>
+                    <div className="p-2.5 bg-white border border-slate-200 rounded-xl">
+                      <span className="text-[10px] text-slate-500 font-bold block">Duplicatas Evitadas</span>
+                      <span className="text-base font-black text-amber-700">{activeExec?.duplicate_items ?? status.executionState.duplicatesAvoidedTotal}</span>
+                    </div>
+                    <div className="p-2.5 bg-white border border-slate-200 rounded-xl">
+                      <span className="text-[10px] text-slate-500 font-bold block">Pendentes Revisão</span>
+                      <span className="text-base font-black text-slate-700">{activeExec?.review_required_items ?? 0}</span>
+                    </div>
+                    <div className="p-2.5 bg-white border border-slate-200 rounded-xl">
+                      <span className="text-[10px] text-slate-500 font-bold block">Erros Encontrados</span>
+                      <span className="text-base font-black text-rose-700">{activeExec?.failed_items ?? 0}</span>
+                    </div>
+                  </div>
+
+                  {/* AUDITORIA DE SKUS GOOGLE & CUSTO ESTIMADO ACUMULADO */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-white border border-slate-200 rounded-xl text-[11px] text-slate-600">
+                    <div>
+                      <span>Chamadas Google por SKU: </span>
+                      <strong>
+                        {activeExec?.google_calls_by_sku && Object.keys(activeExec.google_calls_by_sku).length > 0
+                          ? Object.entries(activeExec.google_calls_by_sku).map(([sku, count]) => `${sku}: ${count}`).join(' • ')
+                          : '0 chamadas externas (dentro da franquia)'}
+                      </strong>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span>Custo Estimado Acumulado: <strong className="text-emerald-800">R$ {(activeExec?.estimated_cost_brl || 0).toFixed(2)}</strong></span>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        Idempotência: {activeExec?.execution_id ? `${activeExec.execution_id.slice(0, 8)}...` : 'N/A'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* CONTROLES DE PAUSA, RETOMADA E CANCELAMENTO (Seção 8) */}
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-[10px] text-slate-500 font-mono">
+                      Worker Lease: {activeExec?.lease_owner ? `${activeExec.lease_owner.slice(0, 16)}...` : 'Livre'} | Supabase: Conectado
+                    </span>
+
+                    <div className="flex items-center gap-2">
+                      {(currentStatus === 'RUNNING' || currentStatus === 'QUEUED') && (
+                        <button
+                          type="button"
+                          onClick={handleTogglePause}
+                          disabled={isTogglingPause}
+                          className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 font-bold text-xs rounded-xl flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <Pause className="w-3.5 h-3.5 text-amber-700" />
+                          <span>{isTogglingPause ? 'Pausando...' : 'Pausar'}</span>
+                        </button>
+                      )}
+
+                      {currentStatus === 'PAUSE_REQUESTED' && (
+                        <span className="px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 font-bold text-xs rounded-xl flex items-center gap-1">
+                          <Clock className="w-3.5 h-3.5 text-amber-600 animate-spin" />
+                          <span>Pausa Solicitada...</span>
+                        </span>
+                      )}
+
+                      {currentStatus === 'PAUSED' && (
+                        <button
+                          type="button"
+                          onClick={handleTogglePause}
+                          disabled={isTogglingPause}
+                          className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-xl flex items-center gap-1 cursor-pointer transition-colors shadow-xs"
+                        >
+                          <Play className="w-3.5 h-3.5 text-emerald-200" />
+                          <span>{isTogglingPause ? 'Retomando...' : 'Retomar Execução'}</span>
+                        </button>
+                      )}
+
+                      {(currentStatus === 'RUNNING' || currentStatus === 'PAUSED' || currentStatus === 'PAUSE_REQUESTED') && (
+                        <button
+                          type="button"
+                          onClick={handleCancelExecution}
+                          disabled={isCancelling}
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 hover:border-rose-300 font-semibold text-xs rounded-xl flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <StopCircle className="w-3.5 h-3.5" />
+                          <span>{isCancelling ? 'Cancelando...' : 'Cancelar'}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* NOTA SOBRE EXECUÇÃO DURÁVEL & BLOQUEADOR OPERACIONAL (Seção 5) */}
+                  {status.durableContract && (
+                    <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-xl text-[10px] text-slate-600 flex items-start gap-2">
+                      <Shield className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <strong className="text-slate-700">Contrato de Execução Durável:</strong>
+                          <span className="bg-slate-200 text-slate-800 px-1.5 py-0.2 rounded font-mono">
+                            {status.durableContract.provider}
+                          </span>
+                          <span className={`px-1.5 py-0.2 rounded font-semibold ${
+                            status.durableContract.isInfrastructureConfigured 
+                              ? 'bg-emerald-100 text-emerald-800' 
+                              : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {status.durableContract.isInfrastructureConfigured ? 'INFRA CONFIGURADA' : 'PENDENTE_CONFIGURACAO_INFRA'}
+                          </span>
+                        </div>
+                        {status.durableContract.operationalBlocker && (
+                          <p className="text-slate-500 leading-normal">
+                            {status.durableContract.operationalBlocker}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* TAB NAVIGATION */}
             <div className="flex gap-2 border-b border-[#F1EBE0] pb-2 text-xs font-bold">
@@ -586,14 +990,25 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
 
                   {/* Botões de Ação da Fase 1 */}
                   <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-emerald-200">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-col gap-0.5">
                       <span className="text-xs text-slate-600">
                         {status.phase1.isCompleted
                           ? 'Fase 1 totalmente concluída com 50 locais válidos!'
                           : status.phase1.isAuthorized
-                            ? `Fase 1 autorizada. Microlotes executados: ${status.executionState.microlotsExecuted} de ${status.executionState.plannedMicrolotsPhase1}`
-                            : 'Nenhuma chamada externa realizada antes de sua autorização.'}
+                            ? `Fase 1 autorizada e auditada no Supabase. Microlotes executados: ${status.executionState.microlotsExecuted} de ${status.executionState.plannedMicrolotsPhase1}`
+                            : status.phase1.statusLabel === 'REVOGADA'
+                              ? 'Autorização revogada pelo administrador. Chamadas bloqueadas por segurança.'
+                              : status.phase1.statusLabel === 'BLOQUEADA_POR_SEGURANCA'
+                                ? 'Execuções bloqueadas: Banco de dados Supabase indisponível.'
+                                : 'Nenhuma chamada externa realizada antes de sua autorização.'}
                       </span>
+                      {status.phase1.authorizationRecord && (
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          Auth ID: {status.phase1.authorizationRecord.authorization_id?.slice(0, 8)}... | 
+                          {status.phase1.authorizationRecord.authorized_by ? ` Por: ${status.phase1.authorizationRecord.authorized_by} |` : ''} 
+                          {status.phase1.authorizedAt ? ` Data: ${new Date(status.phase1.authorizedAt).toLocaleDateString('pt-BR')}` : ''}
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -601,14 +1016,31 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
                         <button
                           type="button"
                           onClick={() => handleAuthorizePhase(1)}
-                          disabled={isAuthorizing}
+                          disabled={isAuthorizing || status.phase1.statusLabel === 'BLOQUEADA_POR_SEGURANCA'}
                           className="w-full sm:w-auto px-5 py-2.5 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-black rounded-xl transition-colors shadow-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                         >
                           <Check className="w-4 h-4 text-emerald-300" />
-                          <span>{isAuthorizing ? 'Autorizando...' : 'Autorizar Início da Fase 1 (Meta 50)'}</span>
+                          <span>
+                            {isAuthorizing 
+                              ? 'Gravando no Supabase...' 
+                              : status.phase1.statusLabel === 'REVOGADA' 
+                                ? 'Reautorizar Início da Fase 1 (Meta 50)' 
+                                : 'Autorizar Início da Fase 1 (Meta 50)'}
+                          </span>
                         </button>
                       ) : (
                         <>
+                          <button
+                            type="button"
+                            onClick={() => handleRevokePhase(1)}
+                            disabled={isRevoking || isExecutingMicrolot}
+                            className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 text-xs font-bold rounded-xl transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                            title="Revoga a autorização persistente no Supabase e bloqueia novos microlotes"
+                          >
+                            <Lock className="w-3.5 h-3.5 text-rose-600" />
+                            <span>{isRevoking ? 'Revogando...' : 'Revogar'}</span>
+                          </button>
+
                           <button
                             type="button"
                             onClick={handleTogglePause}
@@ -631,12 +1063,12 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
                           <button
                             type="button"
                             onClick={handleExecuteMicrolot}
-                            disabled={isExecutingMicrolot || status.executionState.isPaused || status.phase1.isCompleted}
+                            disabled={isExecutingMicrolot || status.executionState.isPaused || status.phase1.isCompleted || status.executionState.isExecuting}
                             className="px-4 py-2 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-black rounded-xl transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                           >
                             <Rocket className="w-3.5 h-3.5 text-emerald-300" />
                             <span>
-                              {isExecutingMicrolot
+                              {isExecutingMicrolot || status.executionState.isExecuting
                                 ? 'Processando Microlote...'
                                 : status.phase1.isCompleted
                                   ? 'Fase 1 Concluída'
@@ -659,8 +1091,10 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
                   }`}>
                     <div className="flex items-center justify-between">
                       <strong className="text-slate-800">Fase 2: Meta Oficial Completa (150 Locais)</strong>
-                      {status.phase2.isAuthorized ? (
+                      {status.phase2.statusLabel === 'AUTORIZADA' ? (
                         <span className="text-[9px] font-black bg-emerald-100 text-emerald-900 px-2 py-0.5 rounded-full">AUTORIZADA</span>
+                      ) : status.phase2.statusLabel === 'REVOGADA' ? (
+                        <span className="text-[9px] font-black bg-rose-100 text-rose-900 px-2 py-0.5 rounded-full">REVOGADA</span>
                       ) : (
                         <Lock className="w-4 h-4 text-slate-400" />
                       )}
@@ -680,6 +1114,16 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
                           className="px-3 py-1.5 bg-[#1B4332] text-white font-bold rounded-xl text-xs hover:bg-[#143326] cursor-pointer"
                         >
                           Aprovar Próxima Fase (Fase 2)
+                        </button>
+                      )}
+                      {status.phase2.isAuthorized && (
+                        <button
+                          type="button"
+                          onClick={() => handleRevokePhase(2)}
+                          disabled={isRevoking}
+                          className="px-2.5 py-1 bg-rose-50 text-rose-700 border border-rose-200 font-bold rounded-lg text-[11px] hover:bg-rose-100 cursor-pointer"
+                        >
+                          Revogar Fase 2
                         </button>
                       )}
                     </div>

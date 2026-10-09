@@ -1925,8 +1925,39 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  // Hotfix 10A.2 Section 5: Admin Session Token for Control Plane /duo-control
+  // Hotfix 10A.2 & Hotfix P0 Etapa 2: Admin Session Token for Control Plane /duo-control
   app.all('/api/admin/session', (req, res) => {
+    const headerKey = req.headers['x-admin-key'] as string | undefined;
+    const bodyKey = req.body?.adminApiKey as string | undefined;
+    const authHeader = req.headers['authorization'];
+    let bearerToken: string | undefined;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      bearerToken = authHeader.substring(7).trim();
+    }
+
+    const providedKey = headerKey || bodyKey || bearerToken;
+    let cookieToken: string | undefined;
+    if (req.headers.cookie) {
+      const match = req.headers.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('duo_admin_token='));
+      if (match) cookieToken = match.substring('duo_admin_token='.length);
+    }
+    const sessionTokenHeader = req.headers['x-admin-session'] as string | undefined;
+    const existingSession = sessionTokenHeader || cookieToken;
+
+    const isValidKey = Boolean(providedKey && providedKey === env.ADMIN_API_KEY);
+    const isValidSession = Boolean(existingSession && requireAdmin.verifySessionToken(existingSession));
+
+    if (!isValidKey && !isValidSession) {
+      res.status(401).json({
+        success: false,
+        authenticated: false,
+        code: 'UNAUTHORIZED',
+        error: 'Chave de administração inválida ou não fornecida.',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
     const token = requireAdmin.generateSessionToken();
     res.cookie('duo_admin_token', token, {
       httpOnly: true,
@@ -2281,24 +2312,72 @@ ${JSON.stringify(context || {})}`;
 
   app.post('/api/admin/accelerator/authorize-phase', requireAdmin, async (req, res) => {
     try {
-      const { phase } = req.body;
+      const { phase, approvedLimits } = req.body;
       const phaseNum = Number(phase) as 1 | 2 | 3;
       if (![1, 2, 3].includes(phaseNum)) {
         res.status(400).json({ error: 'Fase inválida. Escolha 1, 2 ou 3.' });
         return;
       }
-      const adminKey = (req.headers['x-admin-key'] as string) || '';
-      const result = await catalogAcceleratorService.authorizePhase(phaseNum, adminKey);
+      const adminIdentity = (req.headers['x-admin-user'] as string) || 
+        ((req as any).adminUser ? (req as any).adminUser.id : 'admin-autorizado');
+      const result = await catalogAcceleratorService.authorizePhase(phaseNum, adminIdentity, approvedLimits);
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ error: err.message || 'Falha ao autorizar fase.' });
     }
   });
 
-  app.post('/api/admin/accelerator/execute-microlot', requireAdmin, async (_req, res) => {
+  app.post('/api/admin/accelerator/revoke-phase', requireAdmin, async (req, res) => {
     try {
-      const result = await catalogAcceleratorService.executeNextMicrolot();
+      const { phase, reason } = req.body;
+      const phaseNum = Number(phase) as 1 | 2 | 3;
+      if (![1, 2, 3].includes(phaseNum)) {
+        res.status(400).json({ error: 'Fase inválida. Escolha 1, 2 ou 3.' });
+        return;
+      }
+      const adminIdentity = (req.headers['x-admin-user'] as string) || 
+        ((req as any).adminUser ? (req as any).adminUser.id : 'admin-autorizado');
+      const result = await catalogAcceleratorService.revokePhase(phaseNum, adminIdentity, reason);
       res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Falha ao revogar autorização de fase.' });
+    }
+  });
+
+  app.get('/api/admin/accelerator/active-execution', requireAdmin, async (_req, res) => {
+    try {
+      const active = await catalogAcceleratorService.getActiveExecution();
+      res.json({ activeExecution: active });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao consultar execução ativa.' });
+    }
+  });
+
+  app.get('/api/admin/accelerator/execution/:id', requireAdmin, async (req, res) => {
+    try {
+      const execution = await catalogAcceleratorService.getExecution(req.params.id);
+      if (!execution) {
+        res.status(404).json({ error: 'Execução não encontrada.' });
+        return;
+      }
+      res.json(execution);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao consultar execução.' });
+    }
+  });
+
+  app.post('/api/admin/accelerator/execute-microlot', requireAdmin, async (req, res) => {
+    try {
+      const adminIdentity = (req.headers['x-admin-user'] as string) || 
+        ((req as any).adminUser ? (req as any).adminUser.id : 'admin-autorizado');
+      const isAsync = req.query.async === 'true' || req.body?.async === true;
+      if (isAsync) {
+        const result = await catalogAcceleratorService.startMicrolotExecution(req.body?.phase, adminIdentity);
+        res.status(202).json(result);
+      } else {
+        const result = await catalogAcceleratorService.executeNextMicrolot(adminIdentity);
+        res.json(result);
+      }
     } catch (err: any) {
       res.status(400).json({ error: err.message || 'Falha ao executar microlote.' });
     }
@@ -2306,19 +2385,160 @@ ${JSON.stringify(context || {})}`;
 
   app.post('/api/admin/accelerator/pause', requireAdmin, async (_req, res) => {
     try {
-      const result = catalogAcceleratorService.pauseExecution();
+      const result = await catalogAcceleratorService.pauseExecution();
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Falha ao pausar execução.' });
     }
   });
 
-  app.post('/api/admin/accelerator/resume', requireAdmin, async (_req, res) => {
+  app.post('/api/admin/accelerator/resume', requireAdmin, async (req, res) => {
     try {
-      const result = catalogAcceleratorService.resumeExecution();
+      const adminIdentity = (req.headers['x-admin-user'] as string) || 
+        ((req as any).adminUser ? (req as any).adminUser.id : 'admin-autorizado');
+      const result = await catalogAcceleratorService.resumeExecution(adminIdentity);
       res.json(result);
     } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Falha ao retomar execução.' });
+      res.status(400).json({ error: err.message || 'Falha ao retomar execução.' });
+    }
+  });
+
+  app.post('/api/admin/accelerator/cancel', requireAdmin, async (req, res) => {
+    try {
+      const { executionId, reason } = req.body || {};
+      const result = await catalogAcceleratorService.cancelExecution(executionId, reason);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao cancelar execução.' });
+    }
+  });
+
+  // Sprint 10D Release Gate P0 & Finalização: Internal Cloud Tasks Worker Endpoint
+  app.post('/api/internal/tasks/process-microlot', async (req, res) => {
+    // 1. Validação estrita de autenticação Cloud Tasks / OIDC / Segredo interno
+    const internalSecretHeader = req.headers['x-internal-tasks-secret'] as string | undefined;
+    const authHeader = req.headers['authorization'] as string | undefined;
+    const queueHeader = req.headers['x-cloudtasks-queuename'] as string | undefined;
+    const expectedQueue = process.env.CLOUD_TASKS_QUEUE || 'catalog-accelerator';
+
+    // Se o cabeçalho de fila estiver presente, valida que corresponde à fila catalog-accelerator
+    if (queueHeader && queueHeader !== expectedQueue) {
+      res.status(403).json({
+        code: 'FORBIDDEN_QUEUE',
+        error: `Fila inválida '${queueHeader}'. Esperada: '${expectedQueue}'.`,
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    const expectedSecret = process.env.INTERNAL_TASKS_SECRET || env.ADMIN_API_KEY;
+    const isSecretValid = Boolean(internalSecretHeader && internalSecretHeader === expectedSecret);
+    
+    let isTokenValid = false;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7).trim();
+      if (token === expectedSecret || requireAdmin.verifySessionToken(token)) {
+        isTokenValid = true;
+      } else {
+        // Validação de OIDC Token assinado pelo Google Cloud
+        try {
+          const { OAuth2Client } = await import('google-auth-library');
+          const client = new OAuth2Client();
+          const audience = process.env.CLOUD_RUN_AUDIENCE || process.env.CLOUD_RUN_SERVICE_URL || env.APP_PUBLIC_URL;
+          const ticket = await client.verifyIdToken({
+            idToken: token,
+            audience: audience || undefined
+          });
+          const payload = ticket.getPayload();
+          const expectedSa = process.env.CLOUD_TASKS_SERVICE_ACCOUNT_EMAIL || 'catalog-worker-invoker@roteiro-ia-510021.iam.gserviceaccount.com';
+          if (!expectedSa || !payload?.email || payload.email === expectedSa) {
+            isTokenValid = true;
+          }
+        } catch {
+          isTokenValid = false;
+        }
+      }
+    }
+
+    if (!isSecretValid && !isTokenValid) {
+      res.status(401).json({
+        code: 'UNAUTHORIZED',
+        error: 'Acesso rejeitado: endpoint interno restrito a Cloud Tasks com OIDC token ou worker com segredo interno autorizado.',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    // 2. Extração de parâmetros e metadados de entrega do Cloud Tasks
+    try {
+      const { executionId, phaseId, microlotNumber, adminIdentity } = req.body || {};
+      const caller = adminIdentity || 'cloud-tasks-worker';
+
+      const taskHeaders = {
+        queueName: queueHeader,
+        taskName: req.headers['x-cloudtasks-taskname'] as string | undefined,
+        retryCount: Number(req.headers['x-cloudtasks-taskretrycount'] || 0),
+        executionCount: Number(req.headers['x-cloudtasks-taskexecutioncount'] || 0)
+      };
+
+      // 3. Execução idempotente e resiliente
+      const result = await catalogAcceleratorService.processTaskMicrolot({
+        executionId,
+        phaseId,
+        microlotNumber,
+        adminIdentity: caller,
+        taskHeaders
+      });
+
+      // Se houver conflito de concorrência ou lease ativo em outra réplica:
+      // Retorna 429 com Retry-After de 15 segundos para que o Cloud Tasks aplique backoff exponencial
+      if (result.conflict) {
+        res.setHeader('Retry-After', '15');
+        res.status(429).json({
+          success: false,
+          conflict: true,
+          retryable: true,
+          error: result.reason || 'Conflito de concorrência: Fase bloqueada por outro worker.',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Se a tarefa já havia sido concluída anteriormente (idempotência):
+      if (result.idempotent) {
+        res.status(200).json({
+          success: true,
+          idempotent: true,
+          microlotNumber: result.microlotNumber,
+          source: queueHeader ? 'cloud_tasks' : 'internal_caller',
+          message: result.message
+        });
+        return;
+      }
+
+      res.status(200).json({
+        success: true,
+        idempotent: false,
+        microlotNumber: result.microlotNumber,
+        source: queueHeader ? 'cloud_tasks' : 'internal_caller',
+        result
+      });
+    } catch (err: any) {
+      console.error('[CloudTasks Worker Endpoint] Falha ao processar microlote:', err.message);
+      res.status(500).json({
+        success: false,
+        error: err.message || 'Falha ao processar microlote via worker interno.'
+      });
+    }
+  });
+
+  // Recuperação manual / administrativa após reinício do Cloud Run
+  app.post('/api/admin/accelerator/recover-stale', requireAdmin, async (_req, res) => {
+    try {
+      const recovery = await catalogAcceleratorService.checkAndRecoverStaleExecutions();
+      res.json({ success: true, recovery });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao recuperar execuções presas.' });
     }
   });
 
