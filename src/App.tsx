@@ -15,18 +15,18 @@ import { BriefingProcessingIndicator } from './components/BriefingProcessingIndi
 import { DevToolbar } from './components/DevToolbar';
 import { AppTab } from './components/BottomNav';
 
-// Code Splitting & Lazy Loading (Sprint 8B - Mobile Performance)
+/// Code Splitting & Lazy Loading (Sprint 8B - Mobile Performance)
 const UnlockedAppView = React.lazy(() => import('./views/UnlockedAppView').then(m => ({ default: m.UnlockedAppView })));
 const CheckoutModal = React.lazy(() => import('./components/CheckoutModal').then(m => ({ default: m.CheckoutModal })));
 const PlaceDetailModal = React.lazy(() => import('./components/PlaceDetailModal').then(m => ({ default: m.PlaceDetailModal })));
 const ReportErrorModal = React.lazy(() => import('./components/ReportErrorModal').then(m => ({ default: m.ReportErrorModal })));
 const RecoveryModal = React.lazy(() => import('./components/RecoveryModal').then(m => ({ default: m.RecoveryModal })));
 const ActivitySwapModal = React.lazy(() => import('./components/ActivitySwapModal').then(m => ({ default: m.ActivitySwapModal })));
-const AdminDashboard = React.lazy(() => import('./components/AdminDashboard').then(m => ({ default: m.AdminDashboard })));
+const DuoControlView = React.lazy(() => import('./views/DuoControlView').then(m => ({ default: m.DuoControlView })));
 
 import { 
   Trip, 
-  TripPreview,
+  TripPreview, 
   TripPreferences, 
   TripActivity, 
   Place, 
@@ -61,13 +61,37 @@ export default function App() {
   const [rawPromptText, setRawPromptText] = useState<string>('');
   const [isParsingInput, setIsParsingInput] = useState(false);
 
+  // Sprint 11: Navegação Oficial por Rota (/ e /duo-control)
+  const [currentPath, setCurrentPath] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return window.location.pathname;
+    }
+    return '/';
+  });
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const navigateTo = (path: string) => {
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname !== path) {
+        window.history.pushState(null, '', path);
+        setCurrentPath(path);
+      }
+    }
+  };
+
   // Modals state
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [detailActivity, setDetailActivity] = useState<TripActivity | null>(null);
   const [swapActivity, setSwapActivity] = useState<TripActivity | null>(null);
   const [reportPlace, setReportPlace] = useState<Place | null>(null);
   const [isRecoveryOpen, setIsRecoveryOpen] = useState(false);
-  const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [activeAppTab, setActiveAppTab] = useState<AppTab>('hoje');
 
   // User reports storage
@@ -79,9 +103,10 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const path = window.location.pathname;
 
-    // Check DUO21 Control Plane (/duo-control) or ?admin=true (Sprint 8C)
-    if (params.get(ADMIN_PARAM) === 'true' || path === '/duo-control' || path.startsWith('/duo-control')) {
-      setIsAdminOpen(true);
+    // Check DUO21 Control Plane (?admin=true redireciona para a rota oficial /duo-control)
+    if (params.get(ADMIN_PARAM) === 'true') {
+      window.history.replaceState(null, '', '/duo-control');
+      setCurrentPath('/duo-control');
     }
 
     // Check secure token in path or param
@@ -507,6 +532,28 @@ export default function App() {
 
   const headerBackConfig = getHeaderBackConfig();
 
+  // Sprint 11: Rota Administrativa Oficial /duo-control Decoupled
+  if (currentPath === '/duo-control' || currentPath.startsWith('/duo-control')) {
+    return (
+      <React.Suspense fallback={
+        <div className="min-h-screen bg-[#FAF9F6] flex items-center justify-center p-4">
+          <div className="w-10 h-10 rounded-2xl bg-[#1B4332] animate-pulse" />
+        </div>
+      }>
+        <DuoControlView
+          onNavigateHome={() => navigateTo('/')}
+          reports={reports}
+          onApproveReport={(id) => {
+            setReports(prev => prev.map(r => r.id === id ? { ...r, status: 'approved' } : r));
+          }}
+          onRejectReport={(id) => {
+            setReports(prev => prev.map(r => r.id === id ? { ...r, status: 'rejected' } : r));
+          }}
+        />
+      </React.Suspense>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#FAF9F6] text-[#1E293B] flex flex-col font-sans selection:bg-[#1B4332] selection:text-white">
       {/* Delayed Visual Feedback during briefing parsing (Sprint 9 Section 2) */}
@@ -514,7 +561,7 @@ export default function App() {
 
       {/* Header with Contextual Back Navigation */}
       <Header
-        onOpenAdmin={() => setIsAdminOpen(true)}
+        onOpenAdmin={() => navigateTo('/duo-control')}
         onOpenRecovery={() => setIsRecoveryOpen(true)}
         onGoHome={() => {
           if (trip?.status === 'paid') {
@@ -687,20 +734,6 @@ export default function App() {
           <RecoveryModal
             onClose={() => setIsRecoveryOpen(false)}
             onRecoverTrip={handleRecoverTrip}
-          />
-        )}
-
-        {/* 6. Admin Panel Modal */}
-        {isAdminOpen && (
-          <AdminDashboard
-            onClose={() => setIsAdminOpen(false)}
-            reports={reports}
-            onApproveReport={(id) => {
-              setReports(prev => prev.map(r => r.id === id ? { ...r, status: 'approved' } : r));
-            }}
-            onRejectReport={(id) => {
-              setReports(prev => prev.map(r => r.id === id ? { ...r, status: 'rejected' } : r));
-            }}
           />
         )}
       </React.Suspense>

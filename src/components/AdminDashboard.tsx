@@ -41,9 +41,15 @@ import {
   Lock,
   Shield,
   Download,
-  Rocket
+  Rocket,
+  Users,
+  UserPlus,
+  UserCheck,
+  UserX,
+  LogOut,
+  KeyRound
 } from 'lucide-react';
-import { Place, SerraEvent, UserReport, AdminMetrics } from '../types';
+import { Place, SerraEvent, UserReport, AdminMetrics, AdminUserRecord, AdminRole, AdminAuditLogRecord } from '../types';
 import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
 import { EngineWeights, DEFAULT_WEIGHTS } from '../services/itineraryEngine';
 import { providerRegistry, RegisteredProviderStatus } from '../services/providers';
@@ -64,15 +70,19 @@ interface AdminDashboardProps {
   reports: UserReport[];
   onApproveReport: (id: string) => void;
   onRejectReport: (id: string) => void;
+  currentUser?: AdminUserRecord | null;
+  onLogout?: () => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onClose,
   reports,
   onApproveReport,
-  onRejectReport
+  onRejectReport,
+  currentUser = null,
+  onLogout
 }) => {
-  const [activeTab, setActiveTab] = useState<'apps' | 'apis' | 'webhooks' | 'metrics' | 'places' | 'events' | 'reports' | 'weights' | 'integrations' | 'trip_audit' | 'campaign'>('apps');
+  const [activeTab, setActiveTab] = useState<'apps' | 'apis' | 'webhooks' | 'metrics' | 'places' | 'events' | 'reports' | 'weights' | 'integrations' | 'trip_audit' | 'campaign' | 'users'>('apps');
   const [places, setPlaces] = useState<Place[]>(SEED_PLACES);
   const [events, setEvents] = useState<SerraEvent[]>(SEED_EVENTS);
   const [weights, setWeights] = useState<EngineWeights>(DEFAULT_WEIGHTS);
@@ -80,6 +90,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [providerStatuses, setProviderStatuses] = useState<RegisteredProviderStatus[]>(providerRegistry.getStatuses());
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null);
   const [liveUsage, setLiveUsage] = useState<any>(null);
+
+  // Sprint 11: User Management State (Super Admin)
+  const [adminUsers, setAdminUsers] = useState<AdminUserRecord[]>([]);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
+  const [userError, setUserError] = useState<string | null>(null);
+  const [userSuccess, setUserSuccess] = useState<string | null>(null);
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteName, setInviteName] = useState('');
+  const [inviteRole, setInviteRole] = useState<AdminRole>('editor');
+  const [isInviting, setIsInviting] = useState(false);
+  const [auditLogs, setAuditLogs] = useState<AdminAuditLogRecord[]>([]);
+  const [isLoadingAuditLogs, setIsLoadingAuditLogs] = useState(false);
 
   // Sprint 9.2 & Hotfix 10A.2: Administrative Session & Key State
   const [adminApiKey, setAdminApiKey] = useState<string>(() => {
@@ -358,6 +381,172 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   }, [activeTab, fetchPlacesAndMetrics]);
 
+  // Sprint 11: Carregamento de Administradores e Auditoria (Super Admin)
+  const fetchAdminUsers = React.useCallback(async () => {
+    setIsLoadingUsers(true);
+    setUserError(null);
+    try {
+      const res = await fetch('/api/admin/users', {
+        headers: getAdminHeaders(),
+        credentials: 'include'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.users)) {
+          setAdminUsers(data.users);
+        }
+      } else if (res.status === 403) {
+        setUserError('Apenas Super Admins têm permissão para listar e gerenciar administradores.');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setUserError(err.error || 'Falha ao consultar administradores.');
+      }
+    } catch {
+      setUserError('Erro ao consultar administradores do sistema.');
+    } finally {
+      setIsLoadingUsers(false);
+    }
+  }, [getAdminHeaders]);
+
+  const fetchAuditLogs = React.useCallback(async () => {
+    setIsLoadingAuditLogs(true);
+    try {
+      const res = await fetch('/api/admin/audit-logs?limit=40', {
+        headers: getAdminHeaders(),
+        credentials: 'include'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.logs)) {
+          setAuditLogs(data.logs);
+        }
+      }
+    } catch {}
+    finally {
+      setIsLoadingAuditLogs(false);
+    }
+  }, [getAdminHeaders]);
+
+  React.useEffect(() => {
+    if (activeTab === 'users') {
+      fetchAdminUsers();
+      fetchAuditLogs();
+    }
+  }, [activeTab, fetchAdminUsers, fetchAuditLogs]);
+
+  const handleInviteUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmail.trim() || !inviteName.trim()) {
+      setUserError('Preencha o nome completo e o email do novo administrador.');
+      return;
+    }
+
+    setIsInviting(true);
+    setUserError(null);
+    setUserSuccess(null);
+
+    try {
+      const res = await fetch('/api/admin/users/invite', {
+        method: 'POST',
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          email: inviteEmail.trim(),
+          full_name: inviteName.trim(),
+          role: inviteRole
+        }),
+        credentials: 'include'
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao convidar administrador.');
+      }
+
+      setUserSuccess(`Convite enviado com sucesso para ${inviteEmail}.`);
+      setInviteEmail('');
+      setInviteName('');
+      setInviteRole('editor');
+      setIsInviteModalOpen(false);
+      fetchAdminUsers();
+      fetchAuditLogs();
+    } catch (err: any) {
+      setUserError(err.message || 'Erro ao convidar novo usuário.');
+    } finally {
+      setIsInviting(false);
+    }
+  };
+
+  const handleUpdateUserRole = async (targetUserId: string, newRole: AdminRole) => {
+    setUserError(null);
+    setUserSuccess(null);
+    try {
+      const res = await fetch(`/api/admin/users/${targetUserId}/role`, {
+        method: 'PUT',
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ role: newRole }),
+        credentials: 'include'
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao alterar função.');
+      }
+
+      setUserSuccess('Função do administrador atualizada com sucesso.');
+      fetchAdminUsers();
+      fetchAuditLogs();
+    } catch (err: any) {
+      setUserError(err.message || 'Erro ao alterar função.');
+    }
+  };
+
+  const handleToggleUserStatus = async (targetUserId: string, currentStatus: boolean) => {
+    setUserError(null);
+    setUserSuccess(null);
+    const newStatus = !currentStatus;
+    try {
+      const res = await fetch(`/api/admin/users/${targetUserId}/status`, {
+        method: 'PUT',
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ is_active: newStatus }),
+        credentials: 'include'
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao atualizar status.');
+      }
+
+      setUserSuccess(`Usuário ${newStatus ? 'ativado' : 'desativado'} com sucesso.`);
+      fetchAdminUsers();
+      fetchAuditLogs();
+    } catch (err: any) {
+      setUserError(err.message || 'Erro ao atualizar status do usuário.');
+    }
+  };
+
+  const handleRevokeUserSessions = async (targetUserId: string) => {
+    setUserError(null);
+    setUserSuccess(null);
+    try {
+      const res = await fetch(`/api/admin/users/${targetUserId}/revoke-sessions`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        credentials: 'include'
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao revogar sessões.');
+      }
+
+      setUserSuccess('Todas as sessões ativas do administrador foram revogadas.');
+      fetchAuditLogs();
+    } catch (err: any) {
+      setUserError(err.message || 'Erro ao revogar sessões.');
+    }
+  };
+
   const handleSavePlace = async (updatedPlace: Place) => {
     const res = await fetch(`/api/admin/places/${updatedPlace.id}`, {
       method: 'PUT',
@@ -568,28 +757,63 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     <div className="fixed inset-0 z-50 bg-[#FAF9F6] overflow-y-auto">
       {/* Top Bar */}
       <div className="sticky top-0 z-10 bg-white border-b border-[#E7DFCE] px-4 py-3 shadow-xs">
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
+        <div className="max-w-4xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-slate-900 text-white flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl bg-slate-900 text-white flex items-center justify-center shrink-0">
               <ShieldAlert className="w-4 h-4 text-emerald-400" />
             </div>
             <div>
-              <h2 className="text-sm font-extrabold text-[#1E293B]">DUO21 Control Plane • /duo-control</h2>
-              <span className="text-[10px] text-[#64748B]">Painel Administrativo Decoupled do App Roteiro IA</span>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-extrabold text-[#1E293B]">DUO21 Control Plane</h2>
+                <span className="font-mono text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">/duo-control</span>
+              </div>
+              <span className="text-[10px] text-[#64748B]">Painel Administrativo com Governança e RBAC</span>
             </div>
           </div>
 
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-[#1E293B] text-xs font-bold rounded-xl flex items-center gap-1"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Voltar ao App</span>
-          </button>
+          {/* User Profile & Action Buttons */}
+          <div className="flex items-center gap-2">
+            {currentUser && (
+              <div className="flex items-center gap-2 px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-xl text-xs">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="font-bold text-slate-800 truncate max-w-[130px]" title={currentUser.email}>
+                  {currentUser.full_name || currentUser.email}
+                </span>
+                <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-wider ${
+                  currentUser.role === 'super_admin'
+                    ? 'bg-purple-100 text-purple-900 border border-purple-200'
+                    : currentUser.role === 'editor'
+                    ? 'bg-blue-100 text-blue-900 border border-blue-200'
+                    : 'bg-slate-100 text-slate-700 border border-slate-200'
+                }`}>
+                  {currentUser.role === 'super_admin' ? 'Super Admin' : currentUser.role === 'editor' ? 'Editor' : 'Visualizador'}
+                </span>
+              </div>
+            )}
+
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-[#1E293B] text-xs font-bold rounded-xl flex items-center gap-1 transition-colors cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Voltar ao App</span>
+            </button>
+
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                title="Encerrar Sessão"
+                className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold rounded-xl flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Sair</span>
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Tab Navigation (DUO21 CMS Core Modules: Aplicativos, APIs, Webhooks, Analytics, Integrações, Configurações) */}
-        <div className="max-w-3xl mx-auto mt-3 flex gap-1 overflow-x-auto no-scrollbar text-xs font-semibold">
+        {/* Tab Navigation */}
+        <div className="max-w-4xl mx-auto mt-3 flex gap-1 overflow-x-auto no-scrollbar text-xs font-semibold">
           {[
             { id: 'apps', label: 'Aplicativos', icon: Layers },
             { id: 'apis', label: 'APIs', icon: Server },
@@ -598,6 +822,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             { id: 'campaign', label: 'Campanha 300', icon: DollarSign },
             { id: 'integrations', label: 'Integrações', icon: Wifi },
             { id: 'weights', label: 'Configurações', icon: Sliders },
+            { id: 'users', label: 'Usuários & Permissões', icon: Users },
             { id: 'places', label: 'Locais & Preços', icon: MapPin },
             { id: 'events', label: 'Eventos Âncora', icon: Calendar },
             { id: 'reports', label: `Relatos (${reports.length})`, icon: Flag },
@@ -609,7 +834,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`px-3 py-1.5 rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors ${
+                className={`px-3 py-1.5 rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer ${
                   isActive 
                     ? 'bg-[#1B4332] text-white' 
                     : 'bg-[#FAF9F6] text-[#64748B] hover:text-[#1E293B]'
@@ -1433,22 +1658,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <span className="hidden sm:inline">Recarregar</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setShowAcceleratorModal(true)}
-                    className="px-3.5 py-2 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold rounded-xl transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Rocket className="w-3.5 h-3.5 text-emerald-300" />
-                    <span>Acelerador (Meta 150)</span>
-                  </button>
+                  {currentUser?.role === 'super_admin' && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAcceleratorModal(true)}
+                      className="px-3.5 py-2 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold rounded-xl transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Rocket className="w-3.5 h-3.5 text-emerald-300" />
+                      <span>Acelerador (Meta 150)</span>
+                    </button>
+                  )}
 
-                  <button
-                    onClick={handleCreateNewPlace}
-                    className="px-3.5 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>+ Novo Local</span>
-                  </button>
+                  {currentUser?.role !== 'viewer' ? (
+                    <button
+                      onClick={handleCreateNewPlace}
+                      className="px-3.5 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-bold rounded-xl transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>+ Novo Local</span>
+                    </button>
+                  ) : (
+                    <span className="px-3 py-1.5 bg-slate-100 text-slate-600 rounded-xl text-xs font-bold border border-slate-200">
+                      Modo Leitura
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -1906,24 +2139,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             </span>
                           </div>
 
-                          <button
-                            onClick={() => setEditingPlace(p)}
-                            className="px-3 py-1.5 bg-[#FAF6EE] hover:bg-[#EFE7D8] text-[#1B4332] border border-[#D8C9AE] rounded-xl text-xs font-bold transition-colors flex items-center gap-1"
-                            title="Editar todas as seções do local"
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                            <span>Editar</span>
-                          </button>
+                          {currentUser?.role !== 'viewer' && (
+                            <>
+                              <button
+                                onClick={() => setEditingPlace(p)}
+                                className="px-3 py-1.5 bg-[#FAF6EE] hover:bg-[#EFE7D8] text-[#1B4332] border border-[#D8C9AE] rounded-xl text-xs font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                                title="Editar todas as seções do local"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                                <span>Editar</span>
+                              </button>
 
-                          <button
-                            onClick={() => handleTogglePlaceActive(p.id)}
-                            title={p.active ? 'Desativar temporariamente do catálogo' : 'Ativar no catálogo'}
-                            className={`p-2 rounded-xl text-xs font-bold transition-colors ${
-                              p.active ? 'bg-slate-100 text-slate-600 hover:bg-rose-50 hover:text-rose-600' : 'bg-emerald-100 text-emerald-800'
-                            }`}
-                          >
-                            {p.active ? <EyeOff className="w-4 h-4" /> : <Check className="w-4 h-4" />}
-                          </button>
+                              <button
+                                onClick={() => handleTogglePlaceActive(p.id)}
+                                title={p.active ? 'Desativar temporariamente do catálogo' : 'Ativar no catálogo'}
+                                className={`p-2 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                                  p.active ? 'bg-slate-100 text-slate-600 hover:bg-rose-50 hover:text-rose-600' : 'bg-emerald-100 text-emerald-800'
+                                }`}
+                              >
+                                {p.active ? <EyeOff className="w-4 h-4" /> : <Check className="w-4 h-4" />}
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
                     );
@@ -2084,13 +2321,418 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             <button
               onClick={() => {
+                if (currentUser && currentUser.role === 'viewer') {
+                  setUserError('Modo Visualizador: Apenas leitura. Alterações não são permitidas.');
+                  return;
+                }
                 setSavedSuccess(true);
                 setTimeout(() => setSavedSuccess(false), 2000);
               }}
-              className="w-full py-2.5 bg-[#1B4332] text-white text-xs font-bold rounded-xl shadow cursor-pointer"
+              disabled={currentUser?.role === 'viewer'}
+              className="w-full py-2.5 bg-[#1B4332] disabled:bg-slate-300 text-white text-xs font-bold rounded-xl shadow cursor-pointer disabled:cursor-not-allowed"
             >
-              Salvar Parâmetros do Motor
+              {currentUser?.role === 'viewer' ? 'Modo Visualizador (Leitura Apenas)' : 'Salvar Parâmetros do Motor'}
             </button>
+
+            {/* Sub-Aba: Atalho para Usuários e Permissões */}
+            <div className="pt-4 mt-4 border-t border-[#F1EBE0] flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#FAF9F6] p-4 rounded-2xl border">
+              <div>
+                <h4 className="text-xs font-bold text-[#1E293B] flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <span>Configurações → Usuários e Permissões</span>
+                </h4>
+                <p className="text-[11px] text-[#64748B]">
+                  Gerencie funções (Super Admin, Editor, Visualizador), convites e auditoria de acessos.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('users')}
+                className="px-3.5 py-2 bg-[#1B4332] hover:bg-[#2D6A4F] text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0"
+              >
+                Gerenciar Usuários
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================== */}
+        {/* SPRINT 11: ABA USUÁRIOS E PERMISSÕES (RBAC & AUDITORIA)       */}
+        {/* ============================================================== */}
+        {activeTab === 'users' && (
+          <div className="space-y-4">
+            {/* Header Card */}
+            <div className="bg-white p-5 rounded-3xl border border-[#E7DFCE] shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-purple-800 bg-purple-100 px-2 py-0.5 rounded-full inline-block mb-1">
+                  DUO Control • Governança & RBAC
+                </span>
+                <h3 className="text-base font-extrabold text-[#1B4332]">
+                  Usuários e Permissões
+                </h3>
+                <p className="text-xs text-[#64748B]">
+                  Administração de contas com níveis de acesso Super Admin, Editor e Visualizador vinculados ao Supabase Auth.
+                </p>
+              </div>
+
+              {currentUser?.role === 'super_admin' && (
+                <button
+                  type="button"
+                  onClick={() => setIsInviteModalOpen(true)}
+                  className="px-4 py-2 bg-[#1B4332] hover:bg-[#2D6A4F] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer self-start sm:self-center"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>Convidar Administrador</span>
+                </button>
+              )}
+            </div>
+
+            {/* Feedback Messages */}
+            {userError && (
+              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl flex items-start gap-2.5 text-xs text-rose-800">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="flex-1 font-medium">{userError}</div>
+                <button onClick={() => setUserError(null)} className="text-rose-500 hover:text-rose-700">✕</button>
+              </div>
+            )}
+
+            {userSuccess && (
+              <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-start gap-2.5 text-xs text-emerald-900">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div className="flex-1 font-medium">{userSuccess}</div>
+                <button onClick={() => setUserSuccess(null)} className="text-emerald-600 hover:text-emerald-800">✕</button>
+              </div>
+            )}
+
+            {/* Role Permissions Matrix Explanation Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="bg-purple-50/60 border border-purple-200/80 p-3.5 rounded-2xl">
+                <div className="flex items-center gap-1.5 mb-1 text-purple-900 font-extrabold text-xs">
+                  <ShieldCheck className="w-4 h-4 text-purple-700" />
+                  <span>Super Admin</span>
+                </div>
+                <p className="text-[11px] text-purple-950 font-medium leading-relaxed">
+                  Acesso irrestrito: gestão de usuários, autorizações do Catalog Accelerator, Cost Guard, exclusão de dados e auditoria.
+                </p>
+              </div>
+
+              <div className="bg-blue-50/60 border border-blue-200/80 p-3.5 rounded-2xl">
+                <div className="flex items-center gap-1.5 mb-1 text-blue-900 font-extrabold text-xs">
+                  <Edit3 className="w-4 h-4 text-blue-700" />
+                  <span>Editor</span>
+                </div>
+                <p className="text-[11px] text-blue-950 font-medium leading-relaxed">
+                  Curadoria editorial: cadastro e edição de locais, fotos, descrições e campanha. Sem permissão para importações externas ou custos.
+                </p>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-2xl">
+                <div className="flex items-center gap-1.5 mb-1 text-slate-800 font-extrabold text-xs">
+                  <Eye className="w-4 h-4 text-slate-600" />
+                  <span>Visualizador</span>
+                </div>
+                <p className="text-[11px] text-slate-700 font-medium leading-relaxed">
+                  Somente leitura: visualização de catálogos, métricas e relatórios operacionais. Proibida qualquer modificação.
+                </p>
+              </div>
+            </div>
+
+            {/* Modal de Convidar Novo Administrador */}
+            {isInviteModalOpen && (
+              <div className="bg-white p-5 rounded-3xl border-2 border-emerald-600 shadow-md animate-in fade-in">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                  <h4 className="text-sm font-extrabold text-[#1E293B] flex items-center gap-2">
+                    <UserPlus className="w-4 h-4 text-emerald-700" />
+                    <span>Convidar Novo Administrador</span>
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => setIsInviteModalOpen(false)}
+                    className="text-slate-400 hover:text-slate-600 p-1"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <form onSubmit={handleInviteUser} className="space-y-3.5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Nome Completo
+                      </label>
+                      <input
+                        type="text"
+                        value={inviteName}
+                        onChange={(e) => setInviteName(e.target.value)}
+                        placeholder="Ex: Maria Silveira"
+                        className="w-full px-3 py-2 text-xs bg-[#FAF9F6] border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1B4332]"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Email Institucional
+                      </label>
+                      <input
+                        type="email"
+                        value={inviteEmail}
+                        onChange={(e) => setInviteEmail(e.target.value)}
+                        placeholder="maria@duo21.com.br"
+                        className="w-full px-3 py-2 text-xs bg-[#FAF9F6] border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1B4332]"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      Função de Acesso (RBAC)
+                    </label>
+                    <select
+                      value={inviteRole}
+                      onChange={(e) => setInviteRole(e.target.value as AdminRole)}
+                      className="w-full px-3 py-2 text-xs bg-[#FAF9F6] border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1B4332]"
+                    >
+                      <option value="editor">Editor — Edição de catálogo, fotos e descrições</option>
+                      <option value="viewer">Visualizador — Acesso de leitura e consulta de métricas</option>
+                      <option value="super_admin">Super Admin — Acesso irrestrito a todas as operações</option>
+                    </select>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsInviteModalOpen(false)}
+                      className="px-3.5 py-2 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isInviting || !inviteEmail.trim() || !inviteName.trim()}
+                      className="px-4 py-2 bg-[#1B4332] hover:bg-[#2D6A4F] text-white text-xs font-bold rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {isInviting ? 'Enviando Convite...' : 'Enviar Convite'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* Tabela de Administradores */}
+            <div className="bg-white border border-[#E7DFCE] rounded-3xl p-5 shadow-xs space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-[#F1EBE0]">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-[#1B4332] flex items-center gap-1.5">
+                  <Users className="w-4 h-4 text-[#1B4332]" />
+                  <span>Administradores Cadastrados ({adminUsers.length})</span>
+                </h4>
+                <button
+                  type="button"
+                  onClick={fetchAdminUsers}
+                  className="text-xs text-[#1B4332] font-semibold hover:underline flex items-center gap-1"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isLoadingUsers ? 'animate-spin' : ''}`} />
+                  <span>Atualizar</span>
+                </button>
+              </div>
+
+              {isLoadingUsers && adminUsers.length === 0 ? (
+                <div className="py-8 text-center text-xs text-[#64748B]">
+                  Carregando lista de administradores...
+                </div>
+              ) : adminUsers.length === 0 ? (
+                <div className="py-6 text-center text-xs text-[#64748B]">
+                  Nenhum administrador encontrado ou permissão restrita.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                        <th className="py-2.5 px-3">Administrador</th>
+                        <th className="py-2.5 px-3">Função</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3">Último Acesso</th>
+                        <th className="py-2.5 px-3 text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {adminUsers.map(user => {
+                        const isSelf = currentUser?.id === user.id;
+                        const isSuperAdmin = currentUser?.role === 'super_admin';
+
+                        return (
+                          <tr key={user.id} className="hover:bg-slate-50/80 transition-colors">
+                            <td className="py-3 px-3">
+                              <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                                <span>{user.full_name}</span>
+                                {isSelf && (
+                                  <span className="text-[10px] bg-slate-200 text-slate-700 px-1.5 py-0.2 rounded font-normal">
+                                    Você
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[11px] text-slate-500 font-mono">{user.email}</span>
+                            </td>
+
+                            <td className="py-3 px-3">
+                              {isSuperAdmin && !isSelf ? (
+                                <select
+                                  value={user.role}
+                                  onChange={(e) => handleUpdateUserRole(user.id, e.target.value as AdminRole)}
+                                  className="text-xs font-bold py-1 px-2 rounded-lg border border-slate-200 bg-white"
+                                >
+                                  <option value="super_admin">Super Admin</option>
+                                  <option value="editor">Editor</option>
+                                  <option value="viewer">Visualizador</option>
+                                </select>
+                              ) : (
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                                  user.role === 'super_admin'
+                                    ? 'bg-purple-100 text-purple-800 border border-purple-200'
+                                    : user.role === 'editor'
+                                    ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                                    : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                }`}>
+                                  {user.role === 'super_admin' ? 'Super Admin' : user.role === 'editor' ? 'Editor' : 'Visualizador'}
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="py-3 px-3">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
+                                user.is_active
+                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                  : 'bg-rose-100 text-rose-800 border border-rose-200'
+                              }`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${user.is_active ? 'bg-emerald-600' : 'bg-rose-600'}`} />
+                                {user.is_active ? 'Ativo' : 'Inativo'}
+                              </span>
+                            </td>
+
+                            <td className="py-3 px-3 text-[11px] text-slate-600">
+                              {user.last_sign_in_at ? (
+                                new Date(user.last_sign_in_at).toLocaleString('pt-BR', {
+                                  day: '2-digit',
+                                  month: '2-digit',
+                                  year: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                })
+                              ) : (
+                                <span className="text-slate-400 italic">Pendente</span>
+                              )}
+                            </td>
+
+                            <td className="py-3 px-3 text-right">
+                              {isSuperAdmin ? (
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {/* Toggle Status */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleUserStatus(user.id, user.is_active)}
+                                    disabled={isSelf}
+                                    title={isSelf ? 'Você não pode desativar sua própria conta' : (user.is_active ? 'Desativar usuário' : 'Ativar usuário')}
+                                    className={`px-2 py-1 text-[11px] font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                                      user.is_active 
+                                        ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200'
+                                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200'
+                                    }`}
+                                  >
+                                    {user.is_active ? 'Desativar' : 'Ativar'}
+                                  </button>
+
+                                  {/* Revogar Sessões */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRevokeUserSessions(user.id)}
+                                    title="Revogar sessões ativas do usuário"
+                                    className="p-1 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                                  >
+                                    <KeyRound className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 text-[11px] italic">Leitura</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Histórico de Auditoria Administrativa */}
+            <div className="bg-white border border-[#E7DFCE] rounded-3xl p-5 shadow-xs space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-[#F1EBE0]">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-[#1B4332] flex items-center gap-1.5">
+                  <Clock className="w-4 h-4 text-[#1B4332]" />
+                  <span>Trilha de Auditoria Imutável (Últimos Registros)</span>
+                </h4>
+                <button
+                  type="button"
+                  onClick={fetchAuditLogs}
+                  className="text-xs text-[#1B4332] font-semibold hover:underline flex items-center gap-1"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isLoadingAuditLogs ? 'animate-spin' : ''}`} />
+                  <span>Atualizar</span>
+                </button>
+              </div>
+
+              {auditLogs.length === 0 ? (
+                <div className="py-6 text-center text-xs text-[#64748B]">
+                  Nenhum evento de auditoria registrado no momento.
+                </div>
+              ) : (
+                <div className="overflow-x-auto max-h-[360px] overflow-y-auto no-scrollbar">
+                  <table className="w-full text-left text-xs">
+                    <thead className="sticky top-0 bg-white">
+                      <tr className="border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                        <th className="py-2 px-3">Data / Hora</th>
+                        <th className="py-2 px-3">Administrador</th>
+                        <th className="py-2 px-3">Ação</th>
+                        <th className="py-2 px-3">Alvo</th>
+                        <th className="py-2 px-3 text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {auditLogs.map(log => (
+                        <tr key={log.id} className="hover:bg-slate-50/60">
+                          <td className="py-2 px-3 text-[11px] font-mono text-slate-500 whitespace-nowrap">
+                            {new Date(log.created_at).toLocaleString('pt-BR')}
+                          </td>
+                          <td className="py-2 px-3 font-medium text-slate-700">
+                            {log.admin_email}
+                          </td>
+                          <td className="py-2 px-3">
+                            <span className="font-mono text-[10px] bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded font-bold">
+                              {log.action}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-slate-500 font-mono text-[11px] truncate max-w-[140px]" title={log.target_resource || ''}>
+                            {log.target_resource || '-'}
+                          </td>
+                          <td className="py-2 px-3 text-right">
+                            <span className={`text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded ${
+                              log.status === 'SUCCESS' 
+                                ? 'bg-emerald-100 text-emerald-800' 
+                                : log.status === 'BLOCKED'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}>
+                              {log.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

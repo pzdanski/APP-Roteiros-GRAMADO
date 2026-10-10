@@ -1167,7 +1167,13 @@ export class CatalogAcceleratorService {
     // 3. Validação de autorização ativa da fase
     const currentAuth = await supabaseServer.getPhaseAuthorization(targetPhase);
     if (!currentAuth || currentAuth.status !== 'AUTORIZADA' || currentAuth.revoked_at) {
-      throw new Error(`A Fase ${targetPhase} requer autorização administrativa explícita no /duo-control antes de iniciar chamadas.`);
+      return {
+        success: false,
+        reason: 'PHASE_UNAUTHORIZED',
+        microlotNumber: params.microlotNumber || (this.microlotsExecuted + 1),
+        placesAddedCount: 0,
+        message: `A Fase ${targetPhase} requer autorização administrativa explícita no /duo-control antes de iniciar chamadas.`
+      };
     }
 
     // 4. Cost Guard

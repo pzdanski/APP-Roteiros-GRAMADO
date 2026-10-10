@@ -8,6 +8,7 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { validateServerEnv } from './src/server/envValidator';
 import { createAdminAuthMiddleware } from './src/server/adminAuth';
+import { adminAuthService } from './src/server/security/AdminAuthService';
 import { supabaseServer } from './src/server/supabaseServer';
 import { TripAccessService } from './src/services/security/TripAccessService';
 import { googlePlacesServer } from './src/server/places/GooglePlacesServerProvider';
@@ -42,6 +43,9 @@ const env = validateServerEnv();
 googlePlacesCostGuard.syncWithEnv(env);
 googlePlacesServer.syncWithEnv(env);
 const requireAdmin = createAdminAuthMiddleware(env.ADMIN_API_KEY);
+const requireSuperAdmin = requireAdmin.requireSuperAdmin;
+const requireSuperAdminSensitive = requireAdmin.requireSuperAdminSensitive;
+const requireEditorOrSuperAdmin = requireAdmin.requireEditorOrSuperAdmin;
 
 // AI Studio and local development listen on port 3000 (process.env.PORT || 3000) on 0.0.0.0
 function getPort(): number {
@@ -311,7 +315,7 @@ async function startServer() {
   });
 
   // Admin Single Place Resolution (Section 38 & 39)
-  app.post('/api/admin/places/:id/resolve', requireAdmin, async (req, res) => {
+  app.post('/api/admin/places/:id/resolve', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const localPlace = await supabaseServer.getPlaceById(req.params.id);
       if (!localPlace) {
@@ -660,7 +664,7 @@ ${JSON.stringify(context || {})}`;
   );
 
   // Configurable Guide Limit per Trip (Sprint 8B - Requirement 3)
-  app.post('/api/guide/limit', requireAdmin, (req, res) => {
+  app.post('/api/guide/limit', requireSuperAdmin, (req, res) => {
     const { tripId, maxCalls } = req.body;
     if (!tripId || !maxCalls || typeof maxCalls !== 'number') {
       res.status(400).json({ error: 'tripId e maxCalls numérico são obrigatórios.' });
@@ -1457,7 +1461,7 @@ ${JSON.stringify(context || {})}`;
     res.json(userReports);
   });
 
-  app.put('/api/reports/:id/status', requireAdmin, (req, res) => {
+  app.put('/api/reports/:id/status', requireEditorOrSuperAdmin, (req, res) => {
     const report = userReports.find(r => r.id === req.params.id);
     if (!report) {
       res.status(404).json({ code: 'REPORT_NOT_FOUND', error: 'Relatório não encontrado' });
@@ -1501,7 +1505,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/db/places', requireAdmin, async (req, res) => {
+  app.post('/api/db/places', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const created = await supabaseServer.savePlace(req.body);
       res.status(201).json(created);
@@ -1510,7 +1514,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.put('/api/db/places/:id', requireAdmin, async (req, res) => {
+  app.put('/api/db/places/:id', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const updated = await supabaseServer.updatePlace(req.params.id, req.body);
       res.json(updated);
@@ -1519,7 +1523,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.delete('/api/db/places/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/db/places/:id', requireSuperAdmin, async (req, res) => {
     try {
       const success = await supabaseServer.deactivatePlace(req.params.id);
       res.json({ success });
@@ -1539,7 +1543,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/db/places/:id/hours', requireAdmin, async (req, res) => {
+  app.post('/api/db/places/:id/hours', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const record = { ...req.body, place_id: req.params.id };
       const saved = await supabaseServer.upsertHours(record);
@@ -1549,7 +1553,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.delete('/api/db/hours/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/db/hours/:id', requireSuperAdmin, async (req, res) => {
     try {
       const success = await supabaseServer.deleteHours(req.params.id);
       res.json({ success });
@@ -1569,7 +1573,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/db/prices', requireAdmin, async (req, res) => {
+  app.post('/api/db/prices', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const saved = await supabaseServer.savePrice(req.body);
       res.status(201).json(saved);
@@ -1578,7 +1582,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.put('/api/db/prices/:id', requireAdmin, async (req, res) => {
+  app.put('/api/db/prices/:id', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const updated = await supabaseServer.updatePrice(req.params.id, req.body);
       res.json(updated);
@@ -1587,7 +1591,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.delete('/api/db/prices/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/db/prices/:id', requireSuperAdmin, async (req, res) => {
     try {
       const success = await supabaseServer.deletePrice(req.params.id);
       res.json({ success });
@@ -1838,7 +1842,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/places/costguard', requireAdmin, (req, res) => {
+  app.post('/api/admin/places/costguard', requireSuperAdminSensitive, (req, res) => {
     try {
       const updated = googlePlacesCostGuard.updateConfig(req.body);
       const metrics = googlePlacesCostGuard.getMetrics(googlePlacesServer.isConfigured());
@@ -1867,7 +1871,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/places/costguard/pricing', requireAdmin, (req, res) => {
+  app.post('/api/admin/places/costguard/pricing', requireSuperAdminSensitive, (req, res) => {
     try {
       const { sku, costBrl } = req.body;
       if (!sku) {
@@ -1898,7 +1902,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/places', requireAdmin, async (req, res) => {
+  app.post('/api/admin/places', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const created = await supabaseServer.savePlace(req.body);
       res.status(201).json(created);
@@ -1907,7 +1911,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.put('/api/admin/places/:id', requireAdmin, async (req, res) => {
+  app.put('/api/admin/places/:id', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const updated = await supabaseServer.updatePlace(req.params.id, req.body);
       res.json(updated);
@@ -1916,7 +1920,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.delete('/api/admin/places/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/admin/places/:id', requireSuperAdmin, async (req, res) => {
     try {
       const success = await supabaseServer.deactivatePlace(req.params.id);
       res.json({ success });
@@ -1973,8 +1977,307 @@ ${JSON.stringify(context || {})}`;
     });
   });
 
+  // =========================================================================
+  // Sprint 11: DUO Control — Supabase Auth, RBAC & User Management Endpoints
+  // =========================================================================
+
+  // 1. Login com Email e Senha (Supabase Auth / Mock)
+  app.post('/api/admin/auth/login', async (req, res) => {
+    try {
+      const { email, password, mfaCode } = req.body || {};
+      if (!email) {
+        res.status(400).json({ error: 'Email é obrigatório.' });
+        return;
+      }
+
+      const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip;
+
+      const authResult = await adminAuthService.authenticate({
+        email,
+        password,
+        mfaCode,
+        ipAddress
+      });
+
+      // Se MFA for obrigatório e código não foi fornecido
+      if (authResult.mfaRequired) {
+        res.json({
+          success: false,
+          mfaRequired: true,
+          user: authResult.user,
+          permissions: authResult.permissions,
+          message: 'Autenticação em duas etapas (MFA) requerida para Super Admin.'
+        });
+        return;
+      }
+
+      // Gera token de sessão assinado contendo os dados e a role do usuário
+      const sessionToken = requireAdmin.generateSessionToken(authResult.user);
+
+      // Define cookie HttpOnly seguro
+      res.cookie('duo_admin_token', sessionToken, {
+        httpOnly: true,
+        secure: env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 24 * 60 * 60 * 1000
+      });
+
+      res.json({
+        success: true,
+        token: sessionToken,
+        user: authResult.user,
+        permissions: authResult.permissions,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+      });
+    } catch (err: any) {
+      const isBlocked = err.message?.includes('desativada');
+      res.status(isBlocked ? 403 : 401).json({
+        success: false,
+        error: err.message || 'Falha na autenticação administrativa.'
+      });
+    }
+  });
+
+  // 2. Logout e Encerramento de Sessão Persistente
+  app.post('/api/admin/auth/logout', requireAdmin, async (req, res) => {
+    try {
+      const adminUser = (req as any).adminUser;
+      
+      // Captura o token para revogação persistente no banco
+      const cookieHeader = req.headers.cookie;
+      let tokenToRevoke: string | undefined;
+      if (cookieHeader) {
+        const match = cookieHeader.split(';').map(c => c.trim()).find(c => c.startsWith('duo_admin_token='));
+        if (match) tokenToRevoke = match.substring('duo_admin_token='.length);
+      }
+      if (!tokenToRevoke) {
+        const authHeader = req.headers['authorization'];
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          tokenToRevoke = authHeader.substring(7).trim();
+        }
+      }
+      if (tokenToRevoke) {
+        await adminAuthService.revokeSessionToken(tokenToRevoke, adminUser?.id);
+      }
+
+      res.clearCookie('duo_admin_token');
+      if (adminUser?.id) {
+        await adminAuthService.logAuditEvent({
+          adminUserId: adminUser.id,
+          adminEmail: adminUser.email,
+          action: 'LOGOUT',
+          targetResource: 'auth',
+          status: 'SUCCESS'
+        });
+      }
+      res.json({ success: true, message: 'Logout realizado com sucesso e sessão invalidada.' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao realizar logout.' });
+    }
+  });
+
+  // 2.1. Iniciar Cadastro de MFA / TOTP (RFC 6238)
+  app.post('/api/admin/auth/mfa/setup', requireAdmin, async (req, res) => {
+    try {
+      const adminUser = (req as any).adminUser;
+      const mfaSetup = await adminAuthService.startMfaSetup(adminUser.id);
+      res.json({
+        success: true,
+        secret: mfaSetup.secret,
+        otpauthUri: mfaSetup.otpauthUri,
+        message: 'Escaneie a URI ou insira o segredo no aplicativo autenticador e confirme com o primeiro código de 6 dígitos.'
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Falha ao iniciar configuração MFA.' });
+    }
+  });
+
+  // 2.2. Confirmar e Ativar MFA com Comprovação Criptográfica
+  app.post('/api/admin/auth/mfa/confirm', requireAdmin, async (req, res) => {
+    try {
+      const adminUser = (req as any).adminUser;
+      const { code } = req.body || {};
+      if (!code) {
+        res.status(400).json({ error: 'Código de confirmação TOTP de 6 dígitos é obrigatório.' });
+        return;
+      }
+
+      const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip;
+      const result = await adminAuthService.confirmMfaSetup({
+        userId: adminUser.id,
+        code: String(code).trim(),
+        callerEmail: adminUser.email,
+        ipAddress
+      });
+
+      res.json({
+        success: true,
+        recoveryCodes: result.recoveryCodes,
+        message: 'MFA ativado com sucesso! Guarde seus códigos de recuperação em local seguro.'
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Falha ao confirmar ativação do MFA.' });
+    }
+  });
+
+  // 3. Verificação de Perfil e Sessão Ativa
+  app.get('/api/admin/auth/me', requireAdmin, (req, res) => {
+    const adminUser = (req as any).adminUser;
+    const permissions = adminAuthService.getPermissionsForRole(adminUser.role);
+    res.json({
+      success: true,
+      user: adminUser,
+      permissions
+    });
+  });
+
+  // 4. Solicitação de Redefinição de Senha
+  app.post('/api/admin/auth/forgot-password', async (req, res) => {
+    try {
+      const { email } = req.body || {};
+      if (!email) {
+        res.status(400).json({ error: 'Email é obrigatório.' });
+        return;
+      }
+
+      if (process.env.DATA_MODE === 'supabase') {
+        const client = supabaseServer.getRawClient();
+        if (client) {
+          const redirectUrl = `${env.APP_PUBLIC_URL || 'https://roteiro.duo21.com.br'}/duo-control`;
+          await client.auth.resetPasswordForEmail(email, { redirectTo: redirectUrl });
+        }
+      }
+
+      await adminAuthService.logAuditEvent({
+        adminEmail: email,
+        action: 'PASSWORD_RESET_REQUESTED',
+        targetResource: 'auth',
+        status: 'SUCCESS'
+      });
+
+      res.json({
+        success: true,
+        message: 'Se o email informado pertencer a um administrador ativo, as instruções de recuperação foram enviadas.'
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao processar recuperação de senha.' });
+    }
+  });
+
+  // 5. Gestão de Usuários (Restrito a Super Admin)
+  app.get('/api/admin/users', requireSuperAdmin, async (_req, res) => {
+    try {
+      const users = await adminAuthService.listAdminUsers();
+      res.json({ success: true, users });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao listar usuários.' });
+    }
+  });
+
+  app.post('/api/admin/users/invite', requireSuperAdmin, async (req, res) => {
+    try {
+      const { email, full_name, role } = req.body || {};
+      if (!email || !full_name || !role) {
+        res.status(400).json({ error: 'Email, nome completo e função são obrigatórios.' });
+        return;
+      }
+      const caller = (req as any).adminUser;
+      const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip;
+
+      const newUser = await adminAuthService.inviteAdminUser({
+        email,
+        full_name,
+        role,
+        invited_by: caller.id,
+        callerEmail: caller.email,
+        ipAddress
+      });
+
+      res.status(201).json({ success: true, user: newUser });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Falha ao convidar administrador.' });
+    }
+  });
+
+  app.put('/api/admin/users/:id/role', requireSuperAdminSensitive, async (req, res) => {
+    try {
+      const { role } = req.body || {};
+      if (!role) {
+        res.status(400).json({ error: 'Nova função é obrigatória.' });
+        return;
+      }
+      const caller = (req as any).adminUser;
+      const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip;
+
+      const updated = await adminAuthService.updateAdminRole({
+        targetUserId: req.params.id,
+        newRole: role,
+        callerId: caller.id,
+        callerEmail: caller.email,
+        ipAddress
+      });
+
+      res.json({ success: true, user: updated });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Falha ao alterar função.' });
+    }
+  });
+
+  app.put('/api/admin/users/:id/status', requireSuperAdminSensitive, async (req, res) => {
+    try {
+      const { is_active } = req.body || {};
+      if (typeof is_active !== 'boolean') {
+        res.status(400).json({ error: 'is_active booleano é obrigatório.' });
+        return;
+      }
+      const caller = (req as any).adminUser;
+      const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip;
+
+      const updated = await adminAuthService.setAdminStatus({
+        targetUserId: req.params.id,
+        isActive: is_active,
+        callerId: caller.id,
+        callerEmail: caller.email,
+        ipAddress
+      });
+
+      res.json({ success: true, user: updated });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Falha ao atualizar status.' });
+    }
+  });
+
+  app.post('/api/admin/users/:id/revoke-sessions', requireSuperAdminSensitive, async (req, res) => {
+    try {
+      const caller = (req as any).adminUser;
+      const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip;
+
+      const result = await adminAuthService.revokeAdminSessions({
+        targetUserId: req.params.id,
+        callerId: caller.id,
+        callerEmail: caller.email,
+        ipAddress
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao revogar sessões.' });
+    }
+  });
+
+  app.get('/api/admin/audit-logs', requireSuperAdmin, async (req, res) => {
+    try {
+      const limit = Number(req.query.limit) || 50;
+      const offset = Number(req.query.offset) || 0;
+      const logs = await adminAuthService.listAuditLogs(limit, offset);
+      res.json({ success: true, logs });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Falha ao consultar logs de auditoria.' });
+    }
+  });
+
   // Hotfix 10A.2 Section 1, 2, 3: Admin Place Media Upload (JPG, PNG, WEBP with 10MB limit)
-  app.post('/api/admin/places/:id/media/upload', requireAdmin, async (req, res) => {
+  app.post('/api/admin/places/:id/media/upload', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const placeId = req.params.id;
       const targetPlaceId = req.body?.place_id || placeId;
@@ -2149,7 +2452,7 @@ ${JSON.stringify(context || {})}`;
   });
 
   // Media Delete
-  app.delete('/api/admin/places/:id/media/:mediaId', requireAdmin, async (req, res) => {
+  app.delete('/api/admin/places/:id/media/:mediaId', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const { id: placeId, mediaId } = req.params;
       const realPlaceId = await supabaseServer.resolveRealPlaceId(placeId);
@@ -2166,7 +2469,7 @@ ${JSON.stringify(context || {})}`;
   });
 
   // Media Reorder
-  app.put('/api/admin/places/:id/media/reorder', requireAdmin, async (req, res) => {
+  app.put('/api/admin/places/:id/media/reorder', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const { id: placeId } = req.params;
       const realPlaceId = await supabaseServer.resolveRealPlaceId(placeId);
@@ -2188,7 +2491,7 @@ ${JSON.stringify(context || {})}`;
   });
 
   // Sprint 10B Requirement 8 & 9 + Hotfix P1: Smart Place Resolution
-  app.post('/api/admin/places/:id/google-candidates', requireAdmin, async (req, res) => {
+  app.post('/api/admin/places/:id/google-candidates', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const localPlace = await supabaseServer.getPlaceById(req.params.id);
       if (!localPlace) {
@@ -2207,7 +2510,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/places/:id/google-link', requireAdmin, async (req, res) => {
+  app.post('/api/admin/places/:id/google-link', requireSuperAdmin, async (req, res) => {
     try {
       const { google_place_id } = req.body;
       if (!google_place_id || typeof google_place_id !== 'string') {
@@ -2222,7 +2525,7 @@ ${JSON.stringify(context || {})}`;
   });
 
   // Sprint 10C: Controlled Place Details query (Requirement 3, 5, 6, 7, 8, 9, 13)
-  app.post('/api/admin/places/:id/google-details', requireAdmin, async (req, res) => {
+  app.post('/api/admin/places/:id/google-details', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const forceRefresh = req.body?.forceRefresh === true || req.body?.forceRefresh === 'true';
       const result = await googlePlacesServer.getControlledPlaceDetails(req.params.id, { forceRefresh });
@@ -2233,7 +2536,7 @@ ${JSON.stringify(context || {})}`;
   });
 
   // Sprint 10C: Apply ONLY selected fields from Google Places with strict Curatorial & Media protection (Req 9, 10, 11, 12)
-  app.post('/api/admin/places/:id/google-apply', requireAdmin, async (req, res) => {
+  app.post('/api/admin/places/:id/google-apply', requireSuperAdmin, async (req, res) => {
     try {
       const { selectedFields, googleData, candidate } = req.body;
       const dataToApply = googleData || candidate;
@@ -2252,7 +2555,7 @@ ${JSON.stringify(context || {})}`;
   });
 
   // Sprint 10A Section 7, 8, 9 & Sprint 10B: Controlled Candidate Preview & Import from Google Places
-  app.post('/api/admin/places/:id/google-preview', requireAdmin, async (req, res) => {
+  app.post('/api/admin/places/:id/google-preview', requireEditorOrSuperAdmin, async (req, res) => {
     try {
       const localPlace = await supabaseServer.getPlaceById(req.params.id);
       const query = req.body.query || (localPlace ? `${localPlace.name} ${localPlace.city}` : '');
@@ -2263,7 +2566,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/places/:id/google-import', requireAdmin, async (req, res) => {
+  app.post('/api/admin/places/:id/google-import', requireSuperAdmin, async (req, res) => {
     try {
       const { candidate, options } = req.body;
       if (!candidate) {
@@ -2310,7 +2613,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/accelerator/authorize-phase', requireAdmin, async (req, res) => {
+  app.post('/api/admin/accelerator/authorize-phase', requireSuperAdminSensitive, async (req, res) => {
     try {
       const { phase, approvedLimits } = req.body;
       const phaseNum = Number(phase) as 1 | 2 | 3;
@@ -2327,7 +2630,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/accelerator/revoke-phase', requireAdmin, async (req, res) => {
+  app.post('/api/admin/accelerator/revoke-phase', requireSuperAdminSensitive, async (req, res) => {
     try {
       const { phase, reason } = req.body;
       const phaseNum = Number(phase) as 1 | 2 | 3;
@@ -2366,7 +2669,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/accelerator/execute-microlot', requireAdmin, async (req, res) => {
+  app.post('/api/admin/accelerator/execute-microlot', requireSuperAdmin, async (req, res) => {
     try {
       const adminIdentity = (req.headers['x-admin-user'] as string) || 
         ((req as any).adminUser ? (req as any).adminUser.id : 'admin-autorizado');
@@ -2383,7 +2686,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/accelerator/pause', requireAdmin, async (_req, res) => {
+  app.post('/api/admin/accelerator/pause', requireSuperAdmin, async (_req, res) => {
     try {
       const result = await catalogAcceleratorService.pauseExecution();
       res.json(result);
@@ -2392,7 +2695,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/accelerator/resume', requireAdmin, async (req, res) => {
+  app.post('/api/admin/accelerator/resume', requireSuperAdmin, async (req, res) => {
     try {
       const adminIdentity = (req.headers['x-admin-user'] as string) || 
         ((req as any).adminUser ? (req as any).adminUser.id : 'admin-autorizado');
@@ -2403,7 +2706,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/accelerator/cancel', requireAdmin, async (req, res) => {
+  app.post('/api/admin/accelerator/cancel', requireSuperAdmin, async (req, res) => {
     try {
       const { executionId, reason } = req.body || {};
       const result = await catalogAcceleratorService.cancelExecution(executionId, reason);
@@ -2437,7 +2740,7 @@ ${JSON.stringify(context || {})}`;
     let isTokenValid = false;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7).trim();
-      if (token === expectedSecret || requireAdmin.verifySessionToken(token)) {
+      if (token === expectedSecret) {
         isTokenValid = true;
       } else {
         // Validação de OIDC Token assinado pelo Google Cloud
@@ -2451,8 +2754,10 @@ ${JSON.stringify(context || {})}`;
           });
           const payload = ticket.getPayload();
           const expectedSa = process.env.CLOUD_TASKS_SERVICE_ACCOUNT_EMAIL || 'catalog-worker-invoker@roteiro-ia-510021.iam.gserviceaccount.com';
-          if (!expectedSa || !payload?.email || payload.email === expectedSa) {
+          if (payload && payload.email && payload.email.toLowerCase() === expectedSa.toLowerCase()) {
             isTokenValid = true;
+          } else {
+            isTokenValid = false;
           }
         } catch {
           isTokenValid = false;
@@ -2533,7 +2838,7 @@ ${JSON.stringify(context || {})}`;
   });
 
   // Recuperação manual / administrativa após reinício do Cloud Run
-  app.post('/api/admin/accelerator/recover-stale', requireAdmin, async (_req, res) => {
+  app.post('/api/admin/accelerator/recover-stale', requireSuperAdmin, async (_req, res) => {
     try {
       const recovery = await catalogAcceleratorService.checkAndRecoverStaleExecutions();
       res.json({ success: true, recovery });
@@ -2542,7 +2847,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  app.post('/api/admin/accelerator/propose-limits', requireAdmin, async (req, res) => {
+  app.post('/api/admin/accelerator/propose-limits', requireSuperAdmin, async (req, res) => {
     try {
       const { approved } = req.body;
       const updatedConfig = catalogAcceleratorService.applyProposedLimits(approved === true);
@@ -2553,7 +2858,7 @@ ${JSON.stringify(context || {})}`;
   });
 
   // Sprint 10B Section 13 & Hotfix 10B.1: Test Google Places - Mini Mundo Controlled Pre-activation endpoint
-  app.post('/api/admin/places/test-mini-mundo', requireAdmin, async (req, res) => {
+  app.post('/api/admin/places/test-mini-mundo', requireSuperAdmin, async (req, res) => {
     try {
       const confirmed = req.body?.confirmed === true || req.body?.confirmed === 'true';
       const result = await googlePlacesServer.testMiniMundoPreActivation({ confirmed });
@@ -2578,7 +2883,7 @@ ${JSON.stringify(context || {})}`;
     res.json(campaignService.getAdminMetrics());
   });
 
-  app.post('/api/admin/campaign/update', requireAdmin, (req, res) => {
+  app.post('/api/admin/campaign/update', requireEditorOrSuperAdmin, (req, res) => {
     const { active, maxRedemptions, priceBrl, name } = req.body;
     const updated = campaignService.updateCampaign({
       active,
@@ -2593,7 +2898,7 @@ ${JSON.stringify(context || {})}`;
     });
   });
 
-  app.post('/api/admin/campaign/reset', requireAdmin, (req, res) => {
+  app.post('/api/admin/campaign/reset', requireSuperAdmin, (req, res) => {
     campaignService.resetForTest();
     res.json({
       success: true,

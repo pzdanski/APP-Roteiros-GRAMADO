@@ -76,8 +76,8 @@ async function runReleaseGateP0Tests() {
   // Geração e validação de sessão assinada (HMAC)
   const sessionToken = adminAuth.generateSessionToken();
   assert(typeof sessionToken === 'string' && sessionToken.includes('.'), 'Session token deve ser delimitado por ponto');
-  assert(adminAuth.verifySessionToken(sessionToken) === true, 'Session token assinado deve ser válido');
-  assert(adminAuth.verifySessionToken('token-falso.assinatura-falsa') === false, 'Token adulterado deve ser rejeitado');
+  assert(Boolean(adminAuth.verifySessionToken(sessionToken)), 'Session token assinado deve ser válido');
+  assert(!adminAuth.verifySessionToken('token-falso.assinatura-falsa'), 'Token adulterado deve ser rejeitado');
 
   // Chave master nunca deve vazar para localStorage
   const adminDashPath = path.resolve('src/components/AdminDashboard.tsx');
