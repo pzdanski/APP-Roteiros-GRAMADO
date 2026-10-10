@@ -46,7 +46,51 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_admin_id ON public.admin_audit_l
 ALTER TABLE public.admin_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.admin_audit_logs ENABLE ROW LEVEL SECURITY;
 
--- 5. Políticas RLS: Escrita exclusiva pelo backend (service_role)
+-- ==============================================================================
+-- 5. FUNÇÕES AUXILIARES SEGURAS PARA RLS (Anti-Recursão e Zero Hijacking)
+-- SECURITY DEFINER com search_path vazio impede recursão RLS infinita em admin_users
+-- e protege contra vetores de sequestro de caminho de busca.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.is_active_admin()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.admin_users
+    WHERE id = auth.uid() AND is_active = true
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_super_admin()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.admin_users
+    WHERE id = auth.uid() AND role = 'super_admin' AND is_active = true
+  );
+$$;
+
+-- Restrição estrita de execução das funções auxiliares
+REVOKE EXECUTE ON FUNCTION public.is_active_admin() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.is_active_admin() FROM anon;
+GRANT EXECUTE ON FUNCTION public.is_active_admin() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.is_active_admin() TO service_role;
+GRANT EXECUTE ON FUNCTION public.is_active_admin() TO postgres;
+
+REVOKE EXECUTE ON FUNCTION public.is_super_admin() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.is_super_admin() FROM anon;
+GRANT EXECUTE ON FUNCTION public.is_super_admin() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.is_super_admin() TO service_role;
+GRANT EXECUTE ON FUNCTION public.is_super_admin() TO postgres;
+
+-- 6. Políticas RLS: Escrita exclusiva pelo backend (service_role)
 -- Visitantes anônimos não possuem qualquer acesso às tabelas administrativas
 DROP POLICY IF EXISTS "service_role_all_admin_users" ON public.admin_users;
 CREATE POLICY "service_role_all_admin_users"
@@ -64,30 +108,26 @@ CREATE POLICY "service_role_all_admin_audit_logs"
   USING (true)
   WITH CHECK (true);
 
--- Administradores autenticados podem consultar seus próprios dados e a lista de administradores
+-- Administradores autenticados e ativos podem consultar seus dados e demais administradores
+-- CORREÇÃO SPRINT 11.1: Elimina recursão RLS infinita usando função SECURITY DEFINER is_active_admin()
 DROP POLICY IF EXISTS "authenticated_admins_read_users" ON public.admin_users;
 CREATE POLICY "authenticated_admins_read_users"
   ON public.admin_users
   FOR SELECT
   TO authenticated
   USING (
-    EXISTS (
-      SELECT 1 FROM public.admin_users au 
-      WHERE au.id = auth.uid() AND au.is_active = true
-    )
+    public.is_active_admin()
   );
 
--- Super Admins autenticados podem consultar logs de auditoria
+-- Super Admins autenticados e ativos podem consultar logs de auditoria
+-- CORREÇÃO SPRINT 11.1: Validação segura via função SECURITY DEFINER is_super_admin()
 DROP POLICY IF EXISTS "super_admins_read_audit_logs" ON public.admin_audit_logs;
 CREATE POLICY "super_admins_read_audit_logs"
   ON public.admin_audit_logs
   FOR SELECT
   TO authenticated
   USING (
-    EXISTS (
-      SELECT 1 FROM public.admin_users au 
-      WHERE au.id = auth.uid() AND au.role = 'super_admin' AND au.is_active = true
-    )
+    public.is_super_admin()
   );
 
 -- ==============================================================================
@@ -102,6 +142,7 @@ CREATE OR REPLACE FUNCTION public.bootstrap_initial_super_admin(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = ''
 AS $$
 DECLARE
   v_user_id UUID;
@@ -196,6 +237,7 @@ CREATE OR REPLACE FUNCTION public.reset_admin_mfa(p_email TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = ''
 AS $$
 DECLARE
   v_user_id UUID;
