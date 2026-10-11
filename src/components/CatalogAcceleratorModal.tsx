@@ -177,6 +177,10 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'phases' | 'skus' | 'microlots' | 'checkpoints'>('phases');
 
+  const [isAuthError, setIsAuthError] = useState(false);
+  const [isRecoveringSession, setIsRecoveringSession] = useState(false);
+  const [isRecoveringStale, setIsRecoveringStale] = useState(false);
+
   const getHeaders = () => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -185,14 +189,67 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
     if (adminApiKey) {
       headers['x-admin-key'] = adminApiKey;
     }
-    const token = adminSessionToken || sessionStorage.getItem('duo21_admin_session');
+    const token = adminSessionToken || (typeof window !== 'undefined' ? sessionStorage.getItem('duo21_admin_session') : null);
     if (token) {
       headers['x-admin-session'] = token;
+      headers['Authorization'] = `Bearer ${token}`;
     }
     return headers;
   };
 
-  const fetchStatus = async () => {
+  const attemptSessionRenewal = async (): Promise<boolean> => {
+    setIsRecoveringSession(true);
+    try {
+      const storedToken = typeof window !== 'undefined' ? sessionStorage.getItem('duo21_admin_session') : null;
+      const storedKey = adminApiKey || (typeof window !== 'undefined' ? sessionStorage.getItem('duo21_admin_key') : null);
+
+      // 1. Tenta renovar via /api/admin/auth/me
+      const meRes = await fetch('/api/admin/auth/me', {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(storedToken ? { 'x-admin-session': storedToken, 'Authorization': `Bearer ${storedToken}` } : {}),
+          ...(storedKey ? { 'x-admin-key': storedKey } : {})
+        },
+        credentials: 'include'
+      });
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        if (meData?.token) {
+          sessionStorage.setItem('duo21_admin_session', meData.token);
+          setIsAuthError(false);
+          return true;
+        }
+      }
+
+      // 2. Se possuir chave mestra, renova via /api/admin/session
+      if (storedKey) {
+        const sessRes = await fetch('/api/admin/session', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-key': storedKey
+          },
+          body: JSON.stringify({ adminApiKey: storedKey }),
+          credentials: 'include'
+        });
+        if (sessRes.ok) {
+          const sessData = await sessRes.json();
+          if (sessData?.sessionToken) {
+            sessionStorage.setItem('duo21_admin_session', sessData.sessionToken);
+            setIsAuthError(false);
+            return true;
+          }
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      setIsRecoveringSession(false);
+    }
+  };
+
+  const fetchStatus = async (isRetry = false) => {
     setIsLoadingStatus(true);
     setErrorMessage(null);
     try {
@@ -200,13 +257,48 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
         headers: getHeaders(),
         credentials: 'include'
       });
-      if (!res.ok) throw new Error('Falha ao obter status do Catalog Accelerator');
+      if (res.status === 401) {
+        setIsAuthError(true);
+        if (!isRetry) {
+          const renewed = await attemptSessionRenewal();
+          if (renewed) {
+            return await fetchStatus(true);
+          }
+        }
+        throw new Error('Sessão administrativa expirada ou não autorizada (HTTP 401). Verifique suas credenciais de acesso no DUO Control.');
+      }
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Falha ao obter status do Catalog Accelerator');
+      }
+      setIsAuthError(false);
       const data = await res.json();
       setStatus(data);
     } catch (err: any) {
       setErrorMessage(err.message || 'Erro ao carregar dados do acelerador');
     } finally {
       setIsLoadingStatus(false);
+    }
+  };
+
+  const handleRecoverStale = async () => {
+    setIsRecoveringStale(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch('/api/admin/accelerator/recover-stale', {
+        method: 'POST',
+        headers: getHeaders(),
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao recuperar execuções');
+      setSuccessMessage('Verificação e liberação de execuções concluída com sucesso!');
+      await fetchStatus();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Erro ao recuperar execuções');
+    } finally {
+      setIsRecoveringStale(false);
     }
   };
 
@@ -414,7 +506,17 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={fetchStatus}
+              onClick={handleRecoverStale}
+              disabled={isRecoveringStale}
+              className="px-2.5 py-1.5 text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl text-xs font-bold cursor-pointer transition-colors flex items-center gap-1.5"
+              title="Liberar execuções presas ou recuperar após reinício do Cloud Run"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isRecoveringStale ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Liberar Locks</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => fetchStatus()}
               disabled={isLoadingStatus}
               className="p-2 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer transition-colors"
               title="Recarregar status"
@@ -432,9 +534,22 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
 
         {/* Notificações / Alertas */}
         {errorMessage && (
-          <div className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-900 flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-rose-700 shrink-0" />
-            <span>{errorMessage}</span>
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-900 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-700 shrink-0" />
+              <span>{errorMessage}</span>
+            </div>
+            {isAuthError && (
+              <button
+                type="button"
+                onClick={() => fetchStatus()}
+                disabled={isRecoveringSession || isLoadingStatus}
+                className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs cursor-pointer transition-colors flex items-center gap-1.5 shrink-0"
+              >
+                <RefreshCw className={`w-3 h-3 ${isRecoveringSession ? 'animate-spin' : ''}`} />
+                <span>Reconectar Sessão</span>
+              </button>
+            )}
           </div>
         )}
         {successMessage && (

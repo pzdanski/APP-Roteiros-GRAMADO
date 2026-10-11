@@ -20,6 +20,9 @@ export const DuoControlView: React.FC<DuoControlViewProps> = ({
   const [authStatus, setAuthStatus] = useState<'checking' | 'unauthenticated' | 'authenticated'>('checking');
   const [currentUser, setCurrentUser] = useState<AdminUserRecord | null>(null);
   const [permissions, setPermissions] = useState<AdminSessionProfile['permissions'] | null>(null);
+  const [adminSessionToken, setAdminSessionToken] = useState<string | null>(() => {
+    return typeof window !== 'undefined' ? sessionStorage.getItem('duo21_admin_session') : null;
+  });
 
   // Verificação inicial de sessão via backend (/api/admin/auth/me)
   useEffect(() => {
@@ -27,9 +30,16 @@ export const DuoControlView: React.FC<DuoControlViewProps> = ({
 
     async function checkCurrentSession() {
       try {
+        const storedToken = typeof window !== 'undefined' ? sessionStorage.getItem('duo21_admin_session') : null;
+        const storedKey = typeof window !== 'undefined' ? sessionStorage.getItem('duo21_admin_key') : null;
+
         const res = await fetch('/api/admin/auth/me', {
           method: 'GET',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(storedToken ? { 'x-admin-session': storedToken, 'Authorization': `Bearer ${storedToken}` } : {}),
+            ...(storedKey ? { 'x-admin-key': storedKey } : {})
+          },
           credentials: 'include'
         });
 
@@ -38,6 +48,11 @@ export const DuoControlView: React.FC<DuoControlViewProps> = ({
         if (res.ok) {
           const data = await res.json();
           if (data?.user && data.user.is_active) {
+            const activeToken = data.token || storedToken;
+            if (activeToken) {
+              sessionStorage.setItem('duo21_admin_session', activeToken);
+              setAdminSessionToken(activeToken);
+            }
             setCurrentUser(data.user);
             setPermissions(data.permissions || null);
             setAuthStatus('authenticated');
@@ -47,11 +62,14 @@ export const DuoControlView: React.FC<DuoControlViewProps> = ({
         // Se 401, 403 ou resposta inválida
         setCurrentUser(null);
         setPermissions(null);
+        setAdminSessionToken(null);
+        sessionStorage.removeItem('duo21_admin_session');
         setAuthStatus('unauthenticated');
       } catch {
         if (isMounted) {
           setCurrentUser(null);
           setPermissions(null);
+          setAdminSessionToken(null);
           setAuthStatus('unauthenticated');
         }
       }
@@ -69,6 +87,10 @@ export const DuoControlView: React.FC<DuoControlViewProps> = ({
     userPermissions: AdminSessionProfile['permissions'],
     token?: string
   ) => {
+    if (token) {
+      sessionStorage.setItem('duo21_admin_session', token);
+      setAdminSessionToken(token);
+    }
     setCurrentUser(user);
     setPermissions(userPermissions);
     setAuthStatus('authenticated');
@@ -76,9 +98,13 @@ export const DuoControlView: React.FC<DuoControlViewProps> = ({
 
   const handleLogout = async () => {
     try {
+      const storedToken = sessionStorage.getItem('duo21_admin_session');
       await fetch('/api/admin/auth/logout', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(storedToken ? { 'x-admin-session': storedToken, 'Authorization': `Bearer ${storedToken}` } : {})
+        },
         credentials: 'include'
       });
     } catch {
@@ -86,6 +112,7 @@ export const DuoControlView: React.FC<DuoControlViewProps> = ({
     } finally {
       setCurrentUser(null);
       setPermissions(null);
+      setAdminSessionToken(null);
       setAuthStatus('unauthenticated');
       sessionStorage.removeItem('duo21_admin_session');
       sessionStorage.removeItem('duo21_admin_key');
@@ -123,6 +150,7 @@ export const DuoControlView: React.FC<DuoControlViewProps> = ({
       onApproveReport={onApproveReport}
       onRejectReport={onRejectReport}
       currentUser={currentUser}
+      adminSessionToken={adminSessionToken}
       onLogout={handleLogout}
     />
   );

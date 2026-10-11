@@ -545,6 +545,28 @@ export class AdminAuthService {
       if (this.revokedTokenHashes.has(sigHash)) return true;
     }
 
+    // Se for sessão master do sistema / API Key (não vinculada a um UUID na tabela admin_users)
+    if (userId === 'master-session' || userId === 'master-admin-key') {
+      if (process.env.DATA_MODE === 'supabase' && tokenSignature) {
+        try {
+          const client = supabaseServer.getRawClient();
+          if (client) {
+            const sigHash = crypto.createHash('sha256').update(tokenSignature).digest('hex');
+            const { data } = await client
+              .from('admin_revoked_sessions')
+              .select('id')
+              .eq('session_token_hash', sigHash)
+              .maybeSingle();
+            if (data) {
+              this.revokedTokenHashes.add(sigHash);
+              return true;
+            }
+          }
+        } catch {}
+      }
+      return false;
+    }
+
     const user = await this.getAdminUserById(userId);
     if (!user) return true;
 

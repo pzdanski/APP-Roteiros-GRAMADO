@@ -71,6 +71,7 @@ interface AdminDashboardProps {
   onApproveReport: (id: string) => void;
   onRejectReport: (id: string) => void;
   currentUser?: AdminUserRecord | null;
+  adminSessionToken?: string | null;
   onLogout?: () => void;
 }
 
@@ -80,6 +81,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onApproveReport,
   onRejectReport,
   currentUser = null,
+  adminSessionToken: propSessionToken = null,
   onLogout
 }) => {
   const [activeTab, setActiveTab] = useState<'apps' | 'apis' | 'webhooks' | 'metrics' | 'places' | 'events' | 'reports' | 'weights' | 'integrations' | 'trip_audit' | 'campaign' | 'users'>('apps');
@@ -115,8 +117,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return (typeof window !== 'undefined' && sessionStorage.getItem('duo21_admin_key')) || '';
   });
   const [adminSessionToken, setAdminSessionToken] = useState<string | null>(() => {
-    return (typeof window !== 'undefined' && sessionStorage.getItem('duo21_admin_session')) || null;
+    return propSessionToken || (typeof window !== 'undefined' && sessionStorage.getItem('duo21_admin_session')) || null;
   });
+
+  React.useEffect(() => {
+    if (propSessionToken && propSessionToken !== adminSessionToken) {
+      setAdminSessionToken(propSessionToken);
+    }
+  }, [propSessionToken]);
 
   // Establish Admin Session for Control Plane with authentication
   React.useEffect(() => {
@@ -130,7 +138,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       headers: {
         'Content-Type': 'application/json',
         ...(key ? { 'x-admin-key': key } : {}),
-        ...(existingToken ? { 'x-admin-session': existingToken } : {})
+        ...(existingToken ? { 'x-admin-session': existingToken, 'Authorization': `Bearer ${existingToken}` } : {})
       },
       body: JSON.stringify({ adminApiKey: key }),
       credentials: 'include'
@@ -153,9 +161,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     if (adminApiKey) {
       headers['x-admin-key'] = adminApiKey;
     }
-    const token = adminSessionToken || sessionStorage.getItem('duo21_admin_session');
+    const token = adminSessionToken || (typeof window !== 'undefined' ? sessionStorage.getItem('duo21_admin_session') : null);
     if (token) {
       headers['x-admin-session'] = token;
+      headers['Authorization'] = `Bearer ${token}`;
     }
     return headers;
   }, [adminApiKey, adminSessionToken]);

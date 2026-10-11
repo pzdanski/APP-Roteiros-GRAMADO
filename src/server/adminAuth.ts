@@ -15,8 +15,8 @@ export interface AdminAuthManager {
 }
 
 export function createAdminAuthMiddleware(adminApiKey: string): AdminAuthManager {
-  // Segredo determinístico derivado da master key do servidor
-  const sessionSecret = crypto.createHash('sha256').update(adminApiKey || 'duo21-control-secret').digest('hex');
+  // Segredo determinístico derivado de ADMIN_SESSION_SECRET ou master key do servidor
+  const sessionSecret = crypto.createHash('sha256').update(process.env.ADMIN_SESSION_SECRET || adminApiKey || 'duo21-control-secret').digest('hex');
 
   function generateSessionToken(user?: Partial<AdminUserRecord & { mfa_verified?: boolean }>): string {
     const payload = {
@@ -183,8 +183,8 @@ export function createAdminAuthMiddleware(adminApiKey: string): AdminAuthManager
 
   // Helper de Role Enforcement
   function requireRole(allowedRoles: AdminRole[]) {
-    return (req: Request, res: Response, next: NextFunction): void => {
-      requireAdminMiddleware(req, res, () => {
+    return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      await requireAdminMiddleware(req, res, async () => {
         const user = (req as any).adminUser;
         if (!user) {
           res.status(401).json({
@@ -211,10 +211,10 @@ export function createAdminAuthMiddleware(adminApiKey: string): AdminAuthManager
     };
   }
 
-  function requireSuperAdminSensitive(req: Request, res: Response, next: NextFunction): void {
-    requireRole(['super_admin'])(req, res, async () => {
+  async function requireSuperAdminSensitive(req: Request, res: Response, next: NextFunction): Promise<void> {
+    await requireRole(['super_admin'])(req, res, async () => {
       const user = (req as any).adminUser;
-      if (user && user.authMethod !== 'api_key') {
+      if (user && user.authMethod !== 'api_key' && user.id !== 'master-session') {
         const userRec = await adminAuthService.getAdminUserById(user.id);
         // Regra Estrita: Operações sensíveis exigem que o Super Admin possua MFA ativo
         if (!userRec?.mfa_enabled) {

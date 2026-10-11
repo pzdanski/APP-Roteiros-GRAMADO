@@ -28,10 +28,10 @@ import { parseBudgetFromNaturalText } from './src/services/ai/heuristicParser';
 import { rateLimitService } from './src/server/security/RateLimitService';
 import { singleFlight } from './src/server/cache/SingleFlight';
 import { structuredLoggerMiddleware, sanitizeLog } from './src/server/security/StructuredLogger';
-import { 
-  formatGuideReplyText, 
-  generateSmartGuideResponse, 
-  extractItineraryActivities 
+import {
+  formatGuideReplyText,
+  generateSmartGuideResponse,
+  extractItineraryActivities
 } from './src/services/ai/GuideContextService';
 
 if (!process.env.NODE_ENV) {
@@ -241,6 +241,18 @@ async function startServer() {
       cloudflare_ready: true,
       timestamp: new Date().toISOString()
     });
+  });
+
+  // Rota direta para download do pacote da Sprint 11
+  app.get('/api/download/sprint11-package', (req, res) => {
+    const pkgPath = path.resolve(process.cwd(), 'scripts', 'sprint11_release_package.tar.gz');
+    if (fs.existsSync(pkgPath)) {
+      res.setHeader('Content-Type', 'application/gzip');
+      res.setHeader('Content-Disposition', 'attachment; filename="sprint11_release_package.tar.gz"');
+      res.sendFile(pkgPath);
+    } else {
+      res.status(404).json({ error: 'Pacote não encontrado' });
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -1398,8 +1410,8 @@ ${JSON.stringify(context || {})}`;
     }
 
     const hasActivities = Boolean(
-      trip.days && 
-      trip.days.length > 0 && 
+      trip.days &&
+      trip.days.length > 0 &&
       trip.days.every((d: any) => Array.isArray(d.activities) && d.activities.length > 0)
     );
 
@@ -1694,8 +1706,8 @@ ${JSON.stringify(context || {})}`;
       }
 
       const hasActivities = Boolean(
-        trip.days && 
-        trip.days.length > 0 && 
+        trip.days &&
+        trip.days.length > 0 &&
         trip.days.every((d: any) => Array.isArray(d.activities) && d.activities.length > 0)
       );
 
@@ -1727,8 +1739,8 @@ ${JSON.stringify(context || {})}`;
         if (t.secure_token === token) {
           let tripToSend = t;
           const hasActivities = Boolean(
-            tripToSend.days && 
-            tripToSend.days.length > 0 && 
+            tripToSend.days &&
+            tripToSend.days.length > 0 &&
             tripToSend.days.every((d: any) => Array.isArray(d.activities) && d.activities.length > 0)
           );
           if (!hasActivities && (tripToSend.status === 'ready' || tripToSend.status === 'paid')) {
@@ -1806,7 +1818,7 @@ ${JSON.stringify(context || {})}`;
     try {
       const metrics = await supabaseServer.getApiUsageMetrics();
       const placesData = metrics.byProvider?.GOOGLE_PLACES || { requests: 0, costBrl: 0 };
-      
+
       res.json({
         provider: 'GOOGLE_PLACES',
         requestsToday: placesData.requests,
@@ -1949,7 +1961,8 @@ ${JSON.stringify(context || {})}`;
     const existingSession = sessionTokenHeader || cookieToken;
 
     const isValidKey = Boolean(providedKey && providedKey === env.ADMIN_API_KEY);
-    const isValidSession = Boolean(existingSession && requireAdmin.verifySessionToken(existingSession));
+    const verifiedPayload = existingSession ? requireAdmin.verifySessionToken(existingSession) : null;
+    const isValidSession = Boolean(verifiedPayload);
 
     if (!isValidKey && !isValidSession) {
       res.status(401).json({
@@ -1962,11 +1975,14 @@ ${JSON.stringify(context || {})}`;
       return;
     }
 
-    const token = requireAdmin.generateSessionToken();
+    const token = (isValidSession && verifiedPayload)
+      ? requireAdmin.generateSessionToken(verifiedPayload)
+      : requireAdmin.generateSessionToken();
+    const isProduction = env.NODE_ENV === 'production';
     res.cookie('duo_admin_token', token, {
       httpOnly: true,
-      secure: env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
       maxAge: 24 * 60 * 60 * 1000
     });
     res.json({
@@ -2014,11 +2030,12 @@ ${JSON.stringify(context || {})}`;
       // Gera token de sessão assinado contendo os dados e a role do usuário
       const sessionToken = requireAdmin.generateSessionToken(authResult.user);
 
-      // Define cookie HttpOnly seguro
+      // Define cookie HttpOnly seguro (sameSite: none em produção para suportar embedding no AI Studio preview / Cloud Run)
+      const isProduction = env.NODE_ENV === 'production';
       res.cookie('duo_admin_token', sessionToken, {
         httpOnly: true,
-        secure: env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax',
         maxAge: 24 * 60 * 60 * 1000
       });
 
@@ -2042,7 +2059,7 @@ ${JSON.stringify(context || {})}`;
   app.post('/api/admin/auth/logout', requireAdmin, async (req, res) => {
     try {
       const adminUser = (req as any).adminUser;
-      
+
       // Captura o token para revogação persistente no banco
       const cookieHeader = req.headers.cookie;
       let tokenToRevoke: string | undefined;
@@ -2124,8 +2141,25 @@ ${JSON.stringify(context || {})}`;
   app.get('/api/admin/auth/me', requireAdmin, (req, res) => {
     const adminUser = (req as any).adminUser;
     const permissions = adminAuthService.getPermissionsForRole(adminUser.role);
+
+    // Extrai o token existente da requisição ou gera um renovado
+    const authHeader = req.headers['authorization'];
+    let existingToken: string | undefined;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      existingToken = authHeader.substring(7).trim();
+    }
+    if (!existingToken) {
+      existingToken = req.headers['x-admin-session'] as string | undefined;
+    }
+    if (!existingToken && req.headers.cookie) {
+      const match = req.headers.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('duo_admin_token='));
+      if (match) existingToken = match.substring('duo_admin_token='.length);
+    }
+    const token = existingToken || requireAdmin.generateSessionToken(adminUser);
+
     res.json({
       success: true,
+      token,
       user: adminUser,
       permissions
     });
@@ -2319,7 +2353,7 @@ ${JSON.stringify(context || {})}`;
       // Check allowed MIME types
       const allowedMimes = ['image/jpeg', 'image/png', 'image/webp'];
       const effectiveMime = (mimeType || (imageData.startsWith('data:image/webp') ? 'image/webp' : imageData.startsWith('data:image/png') ? 'image/png' : 'image/jpeg')).toLowerCase();
-      
+
       if (!allowedMimes.includes(effectiveMime)) {
         res.status(400).json({ error: 'Formato de imagem inválido. Apenas JPG, JPEG, PNG e WEBP são permitidos.' });
         return;
@@ -2354,8 +2388,8 @@ ${JSON.stringify(context || {})}`;
 
       // Check if Supabase Storage is available
       const hasSupabaseStorage = Boolean(
-        env.DATA_MODE === 'supabase' && 
-        env.SUPABASE_URL && 
+        env.DATA_MODE === 'supabase' &&
+        env.SUPABASE_URL &&
         env.SUPABASE_SERVICE_ROLE_KEY
       );
 
@@ -2363,7 +2397,7 @@ ${JSON.stringify(context || {})}`;
         try {
           const { createClient } = await import('@supabase/supabase-js');
           const client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-          
+
           const { error: uploadError } = await client.storage
             .from('places')
             .upload(storagePath, buffer, {
@@ -2621,7 +2655,7 @@ ${JSON.stringify(context || {})}`;
         res.status(400).json({ error: 'Fase inválida. Escolha 1, 2 ou 3.' });
         return;
       }
-      const adminIdentity = (req.headers['x-admin-user'] as string) || 
+      const adminIdentity = (req.headers['x-admin-user'] as string) ||
         ((req as any).adminUser ? (req as any).adminUser.id : 'admin-autorizado');
       const result = await catalogAcceleratorService.authorizePhase(phaseNum, adminIdentity, approvedLimits);
       res.json(result);
@@ -2638,7 +2672,7 @@ ${JSON.stringify(context || {})}`;
         res.status(400).json({ error: 'Fase inválida. Escolha 1, 2 ou 3.' });
         return;
       }
-      const adminIdentity = (req.headers['x-admin-user'] as string) || 
+      const adminIdentity = (req.headers['x-admin-user'] as string) ||
         ((req as any).adminUser ? (req as any).adminUser.id : 'admin-autorizado');
       const result = await catalogAcceleratorService.revokePhase(phaseNum, adminIdentity, reason);
       res.json(result);
@@ -2671,7 +2705,7 @@ ${JSON.stringify(context || {})}`;
 
   app.post('/api/admin/accelerator/execute-microlot', requireSuperAdmin, async (req, res) => {
     try {
-      const adminIdentity = (req.headers['x-admin-user'] as string) || 
+      const adminIdentity = (req.headers['x-admin-user'] as string) ||
         ((req as any).adminUser ? (req as any).adminUser.id : 'admin-autorizado');
       const isAsync = req.query.async === 'true' || req.body?.async === true;
       if (isAsync) {
@@ -2697,7 +2731,7 @@ ${JSON.stringify(context || {})}`;
 
   app.post('/api/admin/accelerator/resume', requireSuperAdmin, async (req, res) => {
     try {
-      const adminIdentity = (req.headers['x-admin-user'] as string) || 
+      const adminIdentity = (req.headers['x-admin-user'] as string) ||
         ((req as any).adminUser ? (req as any).adminUser.id : 'admin-autorizado');
       const result = await catalogAcceleratorService.resumeExecution(adminIdentity);
       res.json(result);
@@ -2736,7 +2770,7 @@ ${JSON.stringify(context || {})}`;
 
     const expectedSecret = process.env.INTERNAL_TASKS_SECRET || env.ADMIN_API_KEY;
     const isSecretValid = Boolean(internalSecretHeader && internalSecretHeader === expectedSecret);
-    
+
     let isTokenValid = false;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7).trim();
@@ -2912,7 +2946,7 @@ ${JSON.stringify(context || {})}`;
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     const isProd = env.NODE_ENV === 'production';
     console.error(`[Server Error] ${req.method} ${req.path}:`, sanitizeLog(err.message || err));
-    
+
     // Never expose internal stack traces or database details to the client in production
     res.status(err.status || 500).json({
       code: err.code || 'INTERNAL_SERVER_ERROR',
@@ -2937,7 +2971,7 @@ ${JSON.stringify(context || {})}`;
 
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { 
+      server: {
         middlewareMode: true,
         hmr: false,
       },
