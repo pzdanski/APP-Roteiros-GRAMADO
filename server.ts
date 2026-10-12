@@ -267,6 +267,18 @@ async function startServer() {
     }
   });
 
+  // Rota direta para download do pacote do Hotfix 11.6
+  app.get('/api/download/sprint11_6_release_package.tar.gz', (_req, res) => {
+    const pkgPath = path.resolve(process.cwd(), 'sprint11_6_release_package.tar.gz');
+    if (fs.existsSync(pkgPath)) {
+      res.setHeader('Content-Type', 'application/gzip');
+      res.setHeader('Content-Disposition', 'attachment; filename="sprint11_6_release_package.tar.gz"');
+      res.sendFile(pkgPath);
+    } else {
+      res.status(404).json({ error: 'Pacote não encontrado' });
+    }
+  });
+
   // -------------------------------------------------------------------------
   // 2. Google Places Endpoints (Section 4 & 5 & 6 & 8)
   // -------------------------------------------------------------------------
@@ -2105,10 +2117,40 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  // 2.1. Iniciar Cadastro de MFA / TOTP (RFC 6238)
+  // 2.1. Iniciar Cadastro de MFA / TOTP (RFC 6238) com Revalidação de Senha (Hotfix 11.6)
   app.post('/api/admin/auth/mfa/setup', requireAdmin, async (req, res) => {
     try {
       const adminUser = (req as any).adminUser;
+      const { password } = req.body || {};
+
+      // Revalida senha do usuário para iniciar configuração de segurança sensível
+      if (!password || typeof password !== 'string') {
+        res.status(400).json({ error: 'Por motivos de segurança, confirme sua senha atual para iniciar a configuração do MFA.' });
+        return;
+      }
+
+      // Validação de senha no Supabase Auth ou Mock
+      if (process.env.DATA_MODE === 'supabase') {
+        try {
+          const client = supabaseServer.getRawClient();
+          if (client) {
+            const { error: signInErr } = await client.auth.signInWithPassword({
+              email: adminUser.email,
+              password: password.trim()
+            });
+            if (signInErr) {
+              res.status(401).json({ error: 'Senha incorreta. Não foi possível iniciar a configuração do MFA.' });
+              return;
+            }
+          }
+        } catch (authErr: any) {
+          if (authErr.message?.includes('incorreta')) {
+            res.status(401).json({ error: authErr.message });
+            return;
+          }
+        }
+      }
+
       const mfaSetup = await adminAuthService.startMfaSetup(adminUser.id);
       res.json({
         success: true,
@@ -2121,7 +2163,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  // 2.2. Confirmar e Ativar MFA com Comprovação Criptográfica
+  // 2.2. Confirmar e Ativar MFA com Comprovação Criptográfica e Emissão de Nova Sessão (Hotfix 11.6)
   app.post('/api/admin/auth/mfa/confirm', requireAdmin, async (req, res) => {
     try {
       const adminUser = (req as any).adminUser;
@@ -2139,8 +2181,27 @@ ${JSON.stringify(context || {})}`;
         ipAddress
       });
 
+      // Emite novo token de sessão com mfa_verified = true imediatamente
+      const verifiedUser = await adminAuthService.getAdminUserById(adminUser.id);
+      const newSessionToken = requireAdmin.generateSessionToken({
+        ...(verifiedUser || adminUser),
+        mfa_verified: true
+      });
+
+      // Define cookie HttpOnly atualizado
+      const isProd = process.env.NODE_ENV === 'production';
+      res.cookie('duo_admin_token', newSessionToken, {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: 'lax',
+        maxAge: 24 * 60 * 60 * 1000,
+        path: '/'
+      });
+
       res.json({
         success: true,
+        token: newSessionToken,
+        user: verifiedUser || adminUser,
         recoveryCodes: result.recoveryCodes,
         message: 'MFA ativado com sucesso! Guarde seus códigos de recuperação em local seguro.'
       });

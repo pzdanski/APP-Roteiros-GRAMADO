@@ -1,15 +1,15 @@
 import React, { useState } from 'react';
-import { 
-  X, 
-  BarChart3, 
-  MapPin, 
-  Calendar, 
-  DollarSign, 
-  Flag, 
-  Settings, 
-  Plus, 
-  Check, 
-  ShieldAlert, 
+import {
+  X,
+  BarChart3,
+  MapPin,
+  Calendar,
+  DollarSign,
+  Flag,
+  Settings,
+  Plus,
+  Check,
+  ShieldAlert,
   ArrowLeft,
   Percent,
   Sliders,
@@ -47,7 +47,10 @@ import {
   UserCheck,
   UserX,
   LogOut,
-  KeyRound
+  KeyRound,
+  QrCode,
+  Copy,
+  Smartphone
 } from 'lucide-react';
 import { Place, SerraEvent, UserReport, AdminMetrics, AdminUserRecord, AdminRole, AdminAuditLogRecord } from '../types';
 import { SEED_PLACES, SEED_EVENTS } from '../data/seedData';
@@ -55,13 +58,13 @@ import { EngineWeights, DEFAULT_WEIGHTS } from '../services/itineraryEngine';
 import { providerRegistry, RegisteredProviderStatus } from '../services/providers';
 import { PlaceEditorModal } from './PlaceEditorModal';
 import { CatalogAcceleratorModal } from './CatalogAcceleratorModal';
-import { 
-  calculatePlaceDataQuality, 
-  hasRealPhotos, 
-  hasRealGooglePlaceId, 
-  isDemoPlaceId, 
-  auditPlaceRecord, 
-  isPlaceEligibleForItinerary 
+import {
+  calculatePlaceDataQuality,
+  hasRealPhotos,
+  hasRealGooglePlaceId,
+  isDemoPlaceId,
+  auditPlaceRecord,
+  isPlaceEligibleForItinerary
 } from '../utils/dataQuality';
 import { hasDivulgaContent } from '../utils/formatters';
 
@@ -98,6 +101,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isLoadingUsers, setIsLoadingUsers] = useState(false);
   const [userError, setUserError] = useState<string | null>(null);
   const [userSuccess, setUserSuccess] = useState<string | null>(null);
+  // Hotfix 11.6: MFA Setup State
+  const [isMfaModalOpen, setIsMfaModalOpen] = useState(false);
+  const [mfaSetupStep, setMfaSetupStep] = useState<'password' | 'scan' | 'recovery'>('password');
+  const [mfaPassword, setMfaPassword] = useState('');
+  const [mfaOtpCode, setMfaOtpCode] = useState('');
+  const [mfaSecret, setMfaSecret] = useState('');
+  const [mfaOtpauthUri, setMfaOtpauthUri] = useState('');
+  const [mfaRecoveryCodes, setMfaRecoveryCodes] = useState<string[]>([]);
+  const [isSubmittingMfa, setIsSubmittingMfa] = useState(false);
+  const [mfaError, setMfaError] = useState<string | null>(null);
+  const [copiedSecret, setCopiedSecret] = useState(false);
+  const [copiedRecovery, setCopiedRecovery] = useState(false);
+
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteName, setInviteName] = useState('');
@@ -154,9 +170,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   }, [adminApiKey]);
 
   const getAdminHeaders = React.useCallback((extraHeaders: Record<string, string> = {}) => {
-    const headers: Record<string, string> = { 
+    const headers: Record<string, string> = {
       'x-admin-control-plane': 'duo21',
-      ...extraHeaders 
+      ...extraHeaders
     };
     if (adminApiKey) {
       headers['x-admin-key'] = adminApiKey;
@@ -556,6 +572,83 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  // Hotfix 11.6: Handlers para Configuração Inicial de MFA
+  const handleOpenMfaSetup = () => {
+    setIsMfaModalOpen(true);
+    setMfaSetupStep('password');
+    setMfaPassword('');
+    setMfaOtpCode('');
+    setMfaSecret('');
+    setMfaOtpauthUri('');
+    setMfaRecoveryCodes([]);
+    setMfaError(null);
+    setCopiedSecret(false);
+    setCopiedRecovery(false);
+  };
+
+  const handleStartMfaSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaPassword) {
+      setMfaError('Por favor, informe sua senha atual para continuar.');
+      return;
+    }
+    setIsSubmittingMfa(true);
+    setMfaError(null);
+    try {
+      const res = await fetch('/api/admin/auth/mfa/setup', {
+        method: 'POST',
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ password: mfaPassword }),
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao iniciar configuração do MFA.');
+      }
+      setMfaSecret(data.secret);
+      setMfaOtpauthUri(data.otpauthUri);
+      setMfaSetupStep('scan');
+    } catch (err: any) {
+      setMfaError(err.message || 'Erro ao revalidar senha institucional.');
+    } finally {
+      setIsSubmittingMfa(false);
+    }
+  };
+
+  const handleConfirmMfaSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaOtpCode || mfaOtpCode.trim().length !== 6) {
+      setMfaError('Informe o código de 6 dígitos exibido no seu aplicativo autenticador.');
+      return;
+    }
+    setIsSubmittingMfa(true);
+    setMfaError(null);
+    try {
+      const res = await fetch('/api/admin/auth/mfa/confirm', {
+        method: 'POST',
+        headers: getAdminHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ code: mfaOtpCode.trim() }),
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Código de autenticação inválido.');
+      }
+      if (data.token) {
+        sessionStorage.setItem('duo21_admin_session', data.token);
+      }
+      setMfaRecoveryCodes(data.recoveryCodes || []);
+      setMfaSetupStep('recovery');
+      setUserSuccess('Autenticação em duas etapas (MFA/TOTP) ativada com sucesso!');
+      fetchAdminUsers();
+      fetchAuditLogs();
+    } catch (err: any) {
+      setMfaError(err.message || 'Falha ao validar código de autenticação.');
+    } finally {
+      setIsSubmittingMfa(false);
+    }
+  };
+
   const handleSavePlace = async (updatedPlace: Place) => {
     const res = await fetch(`/api/admin/places/${updatedPlace.id}`, {
       method: 'PUT',
@@ -638,7 +731,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     // Double-click protection via ref and state
     if (isSubmittingMiniMundoRef.current || isTestingMiniMundo) return;
     if (!miniMundoConfirmed) return;
-    
+
     isSubmittingMiniMundoRef.current = true;
     setIsTestingMiniMundo(true);
     setMiniMundoTestResult(null);
@@ -696,10 +789,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
       fetchHealthAndWebhook();
     } catch (err: any) {
-      setMiniMundoTestResult({ 
-        success: false, 
-        ready: false, 
-        executedRealCall: false, 
+      setMiniMundoTestResult({
+        success: false,
+        ready: false,
+        executedRealCall: false,
         externalCallsCount: 0,
         costGuardStatus: 'NETWORK_ERROR',
         message: `Erro ao testar Mini Mundo: ${err.message}`,
@@ -844,8 +937,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
                 className={`px-3 py-1.5 rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer ${
-                  isActive 
-                    ? 'bg-[#1B4332] text-white' 
+                  isActive
+                    ? 'bg-[#1B4332] text-white'
                     : 'bg-[#FAF9F6] text-[#64748B] hover:text-[#1E293B]'
                 }`}
               >
@@ -1094,10 +1187,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               ].map(api => {
                 const isConn = api.status === 'CONNECTED';
                 const isMock = api.status === 'MOCK';
-                const badgeClass = isConn 
-                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300' 
-                  : isMock 
-                  ? 'bg-amber-100 text-amber-800 border-amber-300' 
+                const badgeClass = isConn
+                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                  : isMock
+                  ? 'bg-amber-100 text-amber-800 border-amber-300'
                   : 'bg-sky-100 text-sky-800 border-sky-300';
 
                 return (
@@ -1615,8 +1708,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             if (catalogPhoto === 'WITHOUT_PHOTO' && hasPhoto) return false;
 
             const hasHoursConfirmed = Boolean(
-              p.always_open || 
-              (p.opening_hours && Object.keys(p.opening_hours).length > 0 && 
+              p.always_open ||
+              (p.opening_hours && Object.keys(p.opening_hours).length > 0 &&
                Object.values(p.opening_hours).some((v: any) => v && v !== 'Horário não confirmado' && v !== 'Fechado'))
             );
             if (catalogHours === 'WITH_HOURS' && !hasHoursConfirmed) return false;
@@ -1742,8 +1835,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <div className="flex items-center justify-between">
                               <strong className="text-[#1E293B] font-bold truncate">{skuItem.name}</strong>
                               <span className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded ${
-                                skuItem.status === 'WITHIN_FREE_TIER' 
-                                  ? 'bg-emerald-100 text-emerald-800' 
+                                skuItem.status === 'WITHIN_FREE_TIER'
+                                  ? 'bg-emerald-100 text-emerald-800'
                                   : 'bg-amber-100 text-amber-800'
                               }`}>
                                 {skuItem.status === 'WITHIN_FREE_TIER' ? 'GRÁTIS' : 'PAGO'}
@@ -2037,7 +2130,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         }`}
                       >
                         {/* Left: Thumbnail & Info */}
-                        <div 
+                        <div
                           onClick={() => setEditingPlace(p)}
                           className="flex items-start gap-3 flex-1 min-w-0 cursor-pointer"
                         >
@@ -2396,6 +2489,46 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               )}
             </div>
 
+            {/* Hotfix 11.6: Seção Segurança da Minha Conta */}
+            <div className="bg-white p-5 rounded-3xl border border-[#E7DFCE] shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-[#1B4332]" />
+                  <h4 className="text-sm font-extrabold text-[#1E293B]">Segurança da Minha Conta</h4>
+                  <span className={currentUser?.mfa_enabled ? "px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-200" : "px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-100 text-amber-900 border border-amber-300"}>
+
+                    {currentUser?.mfa_enabled ? '✓ MFA / TOTP Ativo' : '⚠️ MFA Não Configurado'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600">
+                  {currentUser?.mfa_enabled
+                    ? 'Sua conta está protegida por verificação em duas etapas via aplicativo autenticador (Google Authenticator, 1Password, etc.).'
+                    : 'A ativação do segundo fator de autenticação (TOTP) é obrigatória para executar operações sensíveis, autorizar fases do Catalog Accelerator e ajustar o Cost Guard.'}
+                </p>
+              </div>
+              <div className="shrink-0">
+                {!currentUser?.mfa_enabled ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenMfaSetup}
+                    className="w-full md:w-auto px-4 py-2.5 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-black rounded-xl transition-colors shadow-xs flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Smartphone className="w-4 h-4 text-emerald-300" />
+                    <span>Ativar autenticação em duas etapas</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleOpenMfaSetup}
+                    className="w-full md:w-auto px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Reconfigurar Autenticador</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
             {/* Feedback Messages */}
             {userError && (
               <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl flex items-start gap-2.5 text-xs text-rose-800">
@@ -2445,6 +2578,221 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </p>
               </div>
             </div>
+
+            {/* Hotfix 11.6: Modal de Configuração de Autenticação em Duas Etapas (MFA / TOTP) */}
+            {isMfaModalOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+                <div className="bg-white rounded-3xl border-2 border-emerald-600 shadow-2xl max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 bg-emerald-100 text-emerald-800 rounded-xl">
+                        <Smartphone className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-base font-extrabold text-[#1E293B]">
+                          Configuração de Autenticação em Duas Etapas (MFA)
+                        </h4>
+                        <p className="text-[11px] text-slate-500">
+                          Padrão RFC 6238 compatível com Google Authenticator, 1Password e Authy
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsMfaModalOpen(false)}
+                      className="p-1 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {mfaError && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <span>{mfaError}</span>
+                    </div>
+                  )}
+
+                  {/* PASSO 1: Revalidação de Senha */}
+                  {mfaSetupStep === 'password' && (
+                    <form onSubmit={handleStartMfaSetup} className="space-y-4">
+                      <div className="p-3.5 bg-amber-50/70 border border-amber-200 rounded-2xl text-xs text-amber-900 space-y-1">
+                        <p className="font-bold">Confirmação de Identidade Obrigatória</p>
+                        <p className="text-[11px] text-amber-800 leading-relaxed">
+                          Para configurar um novo dispositivo autenticador, informe a sua senha atual. Isso assegura que apenas o titular da conta possa gerar novos segredos TOTP.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                          Senha Atual da Conta ({currentUser?.email})
+                        </label>
+                        <input
+                          type="password"
+                          value={mfaPassword}
+                          onChange={(e) => setMfaPassword(e.target.value)}
+                          placeholder="Digite sua senha"
+                          className="w-full px-3.5 py-2.5 text-xs bg-[#FAF9F6] border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1B4332]"
+                          required
+                          autoFocus
+                        />
+                      </div>
+
+                      <div className="flex justify-end gap-2 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setIsMfaModalOpen(false)}
+                          className="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-bold rounded-xl hover:bg-slate-50 transition-colors cursor-pointer"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={isSubmittingMfa}
+                          className="px-5 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-black rounded-xl transition-colors shadow-xs flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                        >
+                          {isSubmittingMfa ? 'Verificando...' : 'Avançar para QR Code'}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  {/* PASSO 2: Escanear QR Code e Inserir Código de 6 Dígitos */}
+                  {mfaSetupStep === 'scan' && (
+                    <form onSubmit={handleConfirmMfaSetup} className="space-y-4">
+                      <div className="space-y-2">
+                        <p className="text-xs text-slate-700 font-semibold">
+                          1. Abra seu aplicativo (Google Authenticator ou 1Password) e escaneie a imagem abaixo:
+                        </p>
+                        <div className="flex flex-col sm:flex-row items-center gap-4 bg-[#FAF9F6] p-4 rounded-2xl border border-slate-200">
+                          <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-2xs shrink-0">
+                            <img
+                              src={"https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=" + encodeURIComponent(mfaOtpauthUri)}
+                              alt="QR Code Autenticador TOTP"
+                              className="w-36 h-36 rounded-lg"
+                              loading="eager"
+                            />
+                          </div>
+                          <div className="space-y-2 text-xs flex-1">
+                            <span className="text-[11px] text-slate-500 font-medium block">
+                              Não consegue escanear pela câmera? Insira a chave manualmente:
+                            </span>
+                            <div className="p-2.5 bg-white border border-slate-300 rounded-xl font-mono text-xs font-bold text-slate-800 break-all select-all flex items-center justify-between gap-2">
+                              <span>{mfaSecret}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(mfaSecret);
+                                  setCopiedSecret(true);
+                                  setTimeout(() => setCopiedSecret(false), 2000);
+                                }}
+                                className="p-1 text-slate-500 hover:text-slate-800 rounded cursor-pointer shrink-0"
+                                title="Copiar Chave Secreta"
+                              >
+                                {copiedSecret ? <CheckCircle2 className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                              </button>
+                            </div>
+                            <span className="text-[10px] text-slate-500 block">
+                              Conta: <strong>{currentUser?.email}</strong> | Emissor: <strong>DUO21 Control</strong>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-bold text-slate-700">
+                          2. Digite o código de 6 dígitos gerado no aplicativo:
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={6}
+                          value={mfaOtpCode}
+                          onChange={(e) => setMfaOtpCode(e.target.value.replace(/\D/g, ''))}
+                          placeholder="000000"
+                          className="w-full px-3.5 py-2.5 text-center text-lg font-mono tracking-widest bg-[#FAF9F6] border-2 border-emerald-600 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1B4332]"
+                          required
+                          autoFocus
+                        />
+                      </div>
+
+                      <div className="flex justify-end gap-2 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setMfaSetupStep('password')}
+                          className="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-bold rounded-xl hover:bg-slate-50 transition-colors cursor-pointer"
+                        >
+                          Voltar
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={isSubmittingMfa || mfaOtpCode.length !== 6}
+                          className="px-5 py-2 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-black rounded-xl transition-colors shadow-xs flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                        >
+                          {isSubmittingMfa ? 'Validando Criptografia...' : 'Confirmar e Ativar MFA'}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  {/* PASSO 3: Exibição Única de Códigos de Recuperação */}
+                  {mfaSetupStep === 'recovery' && (
+                    <div className="space-y-4">
+                      <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-start gap-2.5 text-xs text-emerald-950">
+                        <CheckCircle2 className="w-5 h-5 text-emerald-700 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-bold text-sm">MFA Ativado com Sucesso!</p>
+                          <p className="text-[11px] mt-0.5">
+                            Guarde os 8 códigos de uso único abaixo. Eles são a sua única forma de acesso caso perca o smartphone ou o aplicativo autenticador.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+                        <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                          <span>Códigos de Recuperação de Uso Único (Backup Codes):</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(mfaRecoveryCodes.join(String.fromCharCode(10)));
+                              setCopiedRecovery(true);
+                              setTimeout(() => setCopiedRecovery(false), 2000);
+                            }}
+                            className="text-[11px] text-emerald-800 hover:text-emerald-900 font-bold flex items-center gap-1 cursor-pointer"
+                          >
+                            {copiedRecovery ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                            <span>{copiedRecovery ? 'Copiados!' : 'Copiar Todos'}</span>
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {mfaRecoveryCodes.map((code, idx) => (
+                            <div key={idx} className="p-2 bg-white border border-slate-200 rounded-lg text-center font-mono text-xs font-bold text-slate-800 select-all">
+                              {code}
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-[10px] text-amber-900 bg-amber-50 p-2 rounded-lg border border-amber-200">
+                          ⚠️ <strong>Atenção:</strong> Estes códigos são exibidos apenas agora. Salve-os em seu cofre de senhas (ex: 1Password, Bitwarden).
+                        </p>
+                      </div>
+
+                      <div className="flex justify-end pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsMfaModalOpen(false);
+                            // Atualiza o estado da página
+                            fetchAdminUsers();
+                          }}
+                          className="px-6 py-2.5 bg-[#1B4332] hover:bg-[#143326] text-white text-xs font-black rounded-xl transition-colors shadow-xs cursor-pointer"
+                        >
+                          Concluir e Ir para o Painel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Modal de Convidar Novo Administrador */}
             {isInviteModalOpen && (
@@ -2643,7 +2991,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                     disabled={isSelf}
                                     title={isSelf ? 'Você não pode desativar sua própria conta' : (user.is_active ? 'Desativar usuário' : 'Ativar usuário')}
                                     className={`px-2 py-1 text-[11px] font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
-                                      user.is_active 
+                                      user.is_active
                                         ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200'
                                         : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200'
                                     }`}
@@ -2726,8 +3074,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </td>
                           <td className="py-2 px-3 text-right">
                             <span className={`text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded ${
-                              log.status === 'SUCCESS' 
-                                ? 'bg-emerald-100 text-emerald-800' 
+                              log.status === 'SUCCESS'
+                                ? 'bg-emerald-100 text-emerald-800'
                                 : log.status === 'BLOCKED'
                                 ? 'bg-amber-100 text-amber-800'
                                 : 'bg-rose-100 text-rose-800'
@@ -2779,15 +3127,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="space-y-3">
               {providerStatuses.map(provider => {
                 const isTesting = testingProviderId === provider.id || testingProviderId === 'all';
-                const statusBadgeColor = 
+                const statusBadgeColor =
                   provider.status === 'connected' ? 'bg-emerald-100 text-emerald-800 border-emerald-300' :
                   provider.status === 'mock' ? 'bg-amber-100 text-amber-800 border-amber-300' :
                   provider.status === 'awaiting_key' ? 'bg-sky-100 text-sky-800 border-sky-300' :
                   'bg-rose-100 text-rose-800 border-rose-300';
 
                 return (
-                  <div 
-                    key={provider.id} 
+                  <div
+                    key={provider.id}
                     className="bg-white border border-[#E7DFCE] p-4 rounded-2xl shadow-xs space-y-3"
                   >
                     <div className="flex items-start justify-between">

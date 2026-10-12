@@ -747,8 +747,8 @@ export class AdminAuthService {
       return false;
     }
 
-    // Fallback para contas sem segredo TOTP individual persistido
-    return /^\d{6}$/.test(clean);
+    // Sem segredo TOTP configurado, não valida código genérico
+    return false;
   }
 
   /**
