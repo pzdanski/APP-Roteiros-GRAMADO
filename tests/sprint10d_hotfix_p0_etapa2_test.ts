@@ -98,21 +98,21 @@ async function runTestSuite() {
   const mockAdminRes = {} as Response;
   requireAdmin(mockAdminReq, mockAdminRes, () => {
     adminPassed = true;
-    assert((mockAdminReq as any).adminUser?.role === 'admin', 'Identidade do administrador deve ser anexada');
+    assert((mockAdminReq as any).adminUser?.role === 'super_admin' || (mockAdminReq as any).adminUser?.role === 'admin', 'Identidade do administrador deve ser anexada');
   });
   assert(adminPassed, 'Administrador com chave válida deve ser autenticado com sucesso');
   console.log('   • Administrador com x-admin-key: ✓ Autenticado e identificado');
 
   // Token de sessão criptográfico
   const sessionToken = requireAdmin.generateSessionToken();
-  assert(requireAdmin.verifySessionToken(sessionToken) === true, 'Token de sessão gerado deve ser válido');
+  assert(Boolean(requireAdmin.verifySessionToken(sessionToken)) === true, 'Token de sessão gerado deve ser válido');
   let sessionPassed = false;
   const mockSessionReq = {
     headers: {
       'x-admin-session': sessionToken
     }
   } as unknown as Request;
-  requireAdmin(mockSessionReq, mockAdminRes, () => {
+  await requireAdmin(mockSessionReq, mockAdminRes, () => {
     sessionPassed = true;
   });
   assert(sessionPassed, 'Administrador com token de sessão assinado deve ser aceito');

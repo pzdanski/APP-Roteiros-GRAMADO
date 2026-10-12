@@ -255,6 +255,18 @@ async function startServer() {
     }
   });
 
+  // Rota direta para download do pacote do Hotfix 11.5
+  app.get('/api/download/sprint11_5_release_package.tar.gz', (_req, res) => {
+    const pkgPath = path.resolve(process.cwd(), 'sprint11_5_release_package.tar.gz');
+    if (fs.existsSync(pkgPath)) {
+      res.setHeader('Content-Type', 'application/gzip');
+      res.setHeader('Content-Disposition', 'attachment; filename="sprint11_5_release_package.tar.gz"');
+      res.sendFile(pkgPath);
+    } else {
+      res.status(404).json({ error: 'Pacote não encontrado' });
+    }
+  });
+
   // -------------------------------------------------------------------------
   // 2. Google Places Endpoints (Section 4 & 5 & 6 & 8)
   // -------------------------------------------------------------------------

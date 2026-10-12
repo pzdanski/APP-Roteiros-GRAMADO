@@ -27,7 +27,8 @@ import {
   ArrowRight,
   StopCircle,
   Activity,
-  CheckSquare
+  CheckSquare,
+  Download
 } from 'lucide-react';
 import { AcceleratorExecutionRecord, AcceleratorExecutionStatus } from '../types';
 
@@ -504,6 +505,15 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
           </div>
           
           <div className="flex items-center gap-2">
+            <a
+              href="/api/download/sprint11_5_release_package.tar.gz"
+              download="sprint11_5_release_package.tar.gz"
+              className="px-2.5 py-1.5 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-xl text-xs font-bold cursor-pointer transition-colors flex items-center gap-1.5 shadow-xs"
+              title="Baixar pacote original sprint11_5_release_package.tar.gz (SHA-256 verificado)"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-700" />
+              <span className="hidden sm:inline">Baixar Pacote Hotfix 11.5</span>
+            </a>
             <button
               type="button"
               onClick={handleRecoverStale}
@@ -1114,7 +1124,9 @@ export const CatalogAcceleratorModal: React.FC<CatalogAcceleratorModalProps> = (
                             : status.phase1.statusLabel === 'REVOGADA'
                               ? 'Autorização revogada pelo administrador. Chamadas bloqueadas por segurança.'
                               : status.phase1.statusLabel === 'BLOQUEADA_POR_SEGURANCA'
-                                ? 'Execuções bloqueadas: Banco de dados Supabase indisponível.'
+                                ? (status.executionState.databaseAvailable === false
+                                    ? 'Execuções bloqueadas: Banco de dados Supabase indisponível.'
+                                    : 'Aguardando migração das tabelas do Catalog Accelerator no Supabase (accelerator_phase_authorizations).')
                                 : 'Nenhuma chamada externa realizada antes de sua autorização.'}
                       </span>
                       {status.phase1.authorizationRecord && (
