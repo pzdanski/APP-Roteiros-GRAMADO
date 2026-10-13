@@ -50,13 +50,13 @@ export function createAdminAuthMiddleware(adminApiKey: string): AdminAuthManager
   }
 
   const requireAdminMiddleware = async function requireAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
-    const headerKey = req.headers['x-admin-key'] as string | undefined;
-    const sessionTokenHeader = req.headers['x-admin-session'] as string | undefined;
-    const authHeader = req.headers['authorization'];
+        const headerKey = (req.headers['x-admin-key'] || (req.headers as any)['X-Admin-Key']) as string | undefined;
+    const sessionTokenHeader = (req.headers['x-admin-session'] || (req.headers as any)['X-Admin-Session']) as string | undefined;
+    const authHeader = (req.headers['authorization'] || (req.headers as any)['Authorization']) as string | undefined;
     let bearerToken: string | undefined;
 
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      bearerToken = authHeader.substring(7).trim();
+    if (authHeader && typeof authHeader === 'string' && /^Bearer\s+/i.test(authHeader)) {
+      bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
     }
 
     // 1. Verificação de Cookies HttpOnly (duo_admin_token)
