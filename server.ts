@@ -303,6 +303,30 @@ async function startServer() {
     }
   });
 
+  // Rota direta para download do pacote consolidado da Sprint 11.7 (Binário tar.gz)
+  app.get('/api/download/sprint11_7_release_package.tar.gz', (_req, res) => {
+    const pkgPath = path.resolve(process.cwd(), 'sprint11_7_release_package.tar.gz');
+    if (fs.existsSync(pkgPath)) {
+      res.setHeader('Content-Type', 'application/gzip');
+      res.setHeader('Content-Disposition', 'attachment; filename="sprint11_7_release_package.tar.gz"');
+      res.sendFile(pkgPath);
+    } else {
+      res.status(404).json({ error: 'Pacote não encontrado' });
+    }
+  });
+
+  // Rota de entrega em Base64 para ambientes sob proxy IAP / WAF / Cloud Shell
+  app.get('/api/download/sprint11_7_release_package.base64', (_req, res) => {
+    const b64Path = path.resolve(process.cwd(), 'sprint11_7_release_package.base64');
+    if (fs.existsSync(b64Path)) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'inline; filename="sprint11_7_release_package.base64"');
+      res.sendFile(b64Path);
+    } else {
+      res.status(404).json({ error: 'Arquivo base64 não encontrado' });
+    }
+  });
+
   // -------------------------------------------------------------------------
   // 2. Google Places Endpoints (Section 4 & 5 & 6 & 8)
   // -------------------------------------------------------------------------

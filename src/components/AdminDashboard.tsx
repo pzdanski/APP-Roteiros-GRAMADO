@@ -2919,6 +2919,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <tr className="border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                         <th className="py-2.5 px-3">Administrador</th>
                         <th className="py-2.5 px-3">Função</th>
+                        <th className="py-2.5 px-3">MFA / 2FA</th>
                         <th className="py-2.5 px-3">Status</th>
                         <th className="py-2.5 px-3">Último Acesso</th>
                         <th className="py-2.5 px-3 text-right">Ações</th>
@@ -2967,7 +2968,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               )}
                             </td>
 
-                            <td className="py-3 px-3">
+                                                        <td className="py-3 px-3">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                                user.mfa_enabled
+                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                  : 'bg-amber-100 text-amber-900 border border-amber-300'
+                              }`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${user.mfa_enabled ? 'bg-emerald-600' : 'bg-amber-600'}`} />
+                                {user.mfa_enabled ? '✓ Ativo' : 'Pendente'}
+                              </span>
+                            </td>
+<td className="py-3 px-3">
                               <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
                                 user.is_active
                                   ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'

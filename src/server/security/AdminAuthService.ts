@@ -230,18 +230,19 @@ export class AdminAuthService {
    */
   public async listAdminUsers(): Promise<AdminUserRecord[]> {
     if (this.isSupabaseMode()) {
-      try {
-        const client = supabaseServer.getRawClient();
-        if (client) {
-          const { data, error } = await client
-            .from('admin_users')
-            .select('*')
-            .order('created_at', { ascending: true });
-          if (!error && data) return data as AdminUserRecord[];
-        }
-      } catch (err: any) {
-        console.warn('[Admin User] Falha ao listar do Supabase:', err.message);
+      const client = supabaseServer.getRawClient();
+      if (!client) {
+        throw new Error('DATABASE_UNAVAILABLE: Conexão com o Supabase indisponível no servidor.');
       }
+      const { data, error } = await client
+        .from('admin_users')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (error) {
+        console.error('[Admin Users] Erro ao consultar tabela admin_users no Supabase:', error);
+        throw new Error("Falha ao carregar usuarios administrativos do Supabase: " + (error.message || JSON.stringify(error)));
+      }
+      return (data || []) as AdminUserRecord[];
     }
     return [...this.mockUsers];
   }
