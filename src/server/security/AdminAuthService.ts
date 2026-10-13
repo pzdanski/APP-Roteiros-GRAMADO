@@ -1,6 +1,6 @@
 /**
  * SPRINT 11 — DUO CONTROL: SERVIÇO DE AUTENTICAÇÃO, USUÁRIOS E PERMISSÕES (RBAC)
- * 
+ *
  * Gerencia a identidade dos administradores no Supabase Auth,
  * persistência de perfis e permissões na tabela public.admin_users,
  * registro imutável em public.admin_audit_logs e controle de concorrência/regras de negócio.
@@ -12,6 +12,14 @@ import { AdminRole, AdminUserRecord, AdminAuditLogRecord, AdminSessionProfile } 
 import { TotpService } from './TotpService';
 
 export class AdminAuthService {
+  /**
+   * Determina com precisão se a camada remota do Supabase está ativa e configurada.
+   * Evita divergências entre envValidator, process.env.DATA_MODE e credenciais do Cloud Run.
+   */
+  private isSupabaseMode(): boolean {
+    return supabaseServer.getDataMode() === 'supabase' && Boolean(supabaseServer.getRawClient());
+  }
+
   private static instance: AdminAuthService;
   private mockUsers: AdminUserRecord[] = [];
   private mockAuditLogs: AdminAuditLogRecord[] = [];
@@ -135,7 +143,7 @@ export class AdminAuthService {
       created_at: new Date().toISOString()
     };
 
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -154,7 +162,7 @@ export class AdminAuthService {
   }
 
   public async listAuditLogs(limit: number = 50, offset: number = 0): Promise<AdminAuditLogRecord[]> {
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -176,7 +184,7 @@ export class AdminAuthService {
    * Localiza perfil administrativo por ID
    */
   public async getAdminUserById(id: string): Promise<AdminUserRecord | null> {
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -199,7 +207,7 @@ export class AdminAuthService {
    */
   public async getAdminUserByEmail(email: string): Promise<AdminUserRecord | null> {
     const normalized = email.toLowerCase().trim();
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -221,7 +229,7 @@ export class AdminAuthService {
    * Lista todos os usuários administrativos (Restrito a Super Admin)
    */
   public async listAdminUsers(): Promise<AdminUserRecord[]> {
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -264,7 +272,7 @@ export class AdminAuthService {
     let userId = crypto.randomUUID();
 
     // Se conectado ao Supabase Auth real, convida pelo Supabase Admin API
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -303,7 +311,7 @@ export class AdminAuthService {
       updated_at: now
     };
 
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -362,7 +370,7 @@ export class AdminAuthService {
     target.role = params.newRole;
     target.updated_at = now;
 
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -429,7 +437,7 @@ export class AdminAuthService {
       this.revokedUserSessions.delete(target.id);
     }
 
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -481,7 +489,7 @@ export class AdminAuthService {
       user.updated_at = now;
     }
 
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -516,7 +524,7 @@ export class AdminAuthService {
 
     this.revokedTokenHashes.add(sigHash);
 
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -547,7 +555,7 @@ export class AdminAuthService {
 
     // Se for sessão master do sistema / API Key (não vinculada a um UUID na tabela admin_users)
     if (userId === 'master-session' || userId === 'master-admin-key') {
-      if (process.env.DATA_MODE === 'supabase' && tokenSignature) {
+      if (this.isSupabaseMode() && tokenSignature) {
         try {
           const client = supabaseServer.getRawClient();
           if (client) {
@@ -585,7 +593,7 @@ export class AdminAuthService {
     }
 
     // Consulta se o token específico foi revogado no banco Supabase
-    if (process.env.DATA_MODE === 'supabase' && tokenSignature) {
+    if (this.isSupabaseMode() && tokenSignature) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -665,19 +673,31 @@ export class AdminAuthService {
       user.updated_at = now;
     }
 
-    if (process.env.DATA_MODE === 'supabase') {
-      try {
-        const client = supabaseServer.getRawClient();
-        if (client) {
-          await client.from('admin_users').update({
-            mfa_enabled: true,
-            mfa_secret: pending.secret,
-            mfa_recovery_codes: hashedCodes,
-            updated_at: now
-          }).eq('id', params.userId);
-        }
-      } catch (err: any) {
-        console.warn('[MFA Confirm] Falha ao persistir no Supabase:', err.message);
+    if (this.isSupabaseMode()) {
+      const client = supabaseServer.getRawClient();
+      if (!client) {
+        throw new Error('DATABASE_UNAVAILABLE: Conexão com o Supabase indisponível no servidor.');
+      }
+
+      const { data: updatedRows, error: updateErr } = await client
+        .from('admin_users')
+        .update({
+          mfa_enabled: true,
+          mfa_secret: pending.secret,
+          mfa_recovery_codes: hashedCodes,
+          updated_at: now
+        })
+        .eq('id', params.userId)
+        .select('id, mfa_enabled');
+
+      if (updateErr) {
+        console.error('[MFA Confirm] Erro de persistência no Supabase:', updateErr);
+        throw new Error("Falha ao persistir ativacao do MFA no banco de dados: " + (updateErr.message || JSON.stringify(updateErr)));
+      }
+
+      if (!updatedRows || updatedRows.length === 0) {
+        console.error('[MFA Confirm] Nenhuma linha atualizada em admin_users para o ID:', params.userId);
+        throw new Error('Falha ao localizar o registro do administrador em admin_users para atualização de MFA.');
       }
     }
 
@@ -721,7 +741,7 @@ export class AdminAuthService {
         const recoveryResult = TotpService.verifyAndConsumeRecoveryCode(clean, user.mfa_recovery_codes);
         if (recoveryResult.isValid) {
           user.mfa_recovery_codes = recoveryResult.remainingHashedCodes;
-          if (process.env.DATA_MODE === 'supabase') {
+          if (this.isSupabaseMode()) {
             try {
               const client = supabaseServer.getRawClient();
               if (client) {
@@ -767,9 +787,9 @@ export class AdminAuthService {
     password?: string;
     mfaCode?: string;
     ipAddress?: string;
-  }): Promise<{ 
-    user: AdminUserRecord; 
-    permissions: AdminSessionProfile['permissions']; 
+  }): Promise<{
+    user: AdminUserRecord;
+    permissions: AdminSessionProfile['permissions'];
     authMethod: any;
     mfaRequired?: boolean;
   }> {
@@ -802,7 +822,7 @@ export class AdminAuthService {
     }
 
     // Se no modo Supabase real, autentica contra auth.users do Supabase Auth
-    if (process.env.DATA_MODE === 'supabase' && params.password) {
+    if (this.isSupabaseMode() && params.password) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {
@@ -861,7 +881,7 @@ export class AdminAuthService {
     // Atualiza last_sign_in_at
     const now = new Date().toISOString();
     adminUser.last_sign_in_at = now;
-    if (process.env.DATA_MODE === 'supabase') {
+    if (this.isSupabaseMode()) {
       try {
         const client = supabaseServer.getRawClient();
         if (client) {

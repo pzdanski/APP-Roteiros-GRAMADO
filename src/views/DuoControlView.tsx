@@ -152,6 +152,7 @@ export const DuoControlView: React.FC<DuoControlViewProps> = ({
       currentUser={currentUser}
       adminSessionToken={adminSessionToken}
       onLogout={handleLogout}
+      onUserUpdated={(updatedUser) => setCurrentUser(updatedUser)}
     />
   );
 };

@@ -279,6 +279,30 @@ async function startServer() {
     }
   });
 
+  // Rota direta para download do pacote do Hotfix 11.6.1
+  app.get('/api/download/sprint11_6_1_release_package.tar.gz', (_req, res) => {
+    const pkgPath = path.resolve(process.cwd(), 'sprint11_6_1_release_package.tar.gz');
+    if (fs.existsSync(pkgPath)) {
+      res.setHeader('Content-Type', 'application/gzip');
+      res.setHeader('Content-Disposition', 'attachment; filename="sprint11_6_1_release_package.tar.gz"');
+      res.sendFile(pkgPath);
+    } else {
+      res.status(404).json({ error: 'Pacote não encontrado' });
+    }
+  });
+
+  // Rota direta para download do pacote do Hotfix 11.6.2
+  app.get('/api/download/sprint11_6_2_release_package.tar.gz', (_req, res) => {
+    const pkgPath = path.resolve(process.cwd(), 'sprint11_6_2_release_package.tar.gz');
+    if (fs.existsSync(pkgPath)) {
+      res.setHeader('Content-Type', 'application/gzip');
+      res.setHeader('Content-Disposition', 'attachment; filename="sprint11_6_2_release_package.tar.gz"');
+      res.sendFile(pkgPath);
+    } else {
+      res.status(404).json({ error: 'Pacote não encontrado' });
+    }
+  });
+
   // -------------------------------------------------------------------------
   // 2. Google Places Endpoints (Section 4 & 5 & 6 & 8)
   // -------------------------------------------------------------------------
@@ -2163,7 +2187,7 @@ ${JSON.stringify(context || {})}`;
     }
   });
 
-  // 2.2. Confirmar e Ativar MFA com Comprovação Criptográfica e Emissão de Nova Sessão (Hotfix 11.6)
+  // 2.2. Confirmar e Ativar MFA com Comprovação Criptográfica e Emissão de Nova Sessão (Hotfix 11.6.1)
   app.post('/api/admin/auth/mfa/confirm', requireAdmin, async (req, res) => {
     try {
       const adminUser = (req as any).adminUser;
@@ -2174,6 +2198,8 @@ ${JSON.stringify(context || {})}`;
       }
 
       const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip;
+
+      // 1. Tenta a confirmação e persistência estrita no banco
       const result = await adminAuthService.confirmMfaSetup({
         userId: adminUser.id,
         code: String(code).trim(),
@@ -2181,14 +2207,21 @@ ${JSON.stringify(context || {})}`;
         ipAddress
       });
 
-      // Emite novo token de sessão com mfa_verified = true imediatamente
+      // 2. Busca o registro atualizado diretamente do repositório/banco
       const verifiedUser = await adminAuthService.getAdminUserById(adminUser.id);
+
+      // Verificação defensiva: Se após confirmMfaSetup o mfa_enabled ainda não for true, aborta a sessão verificada
+      if (!verifiedUser?.mfa_enabled) {
+        throw new Error('Falha de consistência: O perfil não confirmou mfa_enabled=true no banco de dados. Sessão com MFA rejeitada.');
+      }
+
+      // 3. Emite novo token de sessão com mfa_verified = true estritamente respaldado pela gravação
       const newSessionToken = requireAdmin.generateSessionToken({
-        ...(verifiedUser || adminUser),
+        ...verifiedUser,
         mfa_verified: true
       });
 
-      // Define cookie HttpOnly atualizado
+      // 4. Define cookie HttpOnly atualizado
       const isProd = process.env.NODE_ENV === 'production';
       res.cookie('duo_admin_token', newSessionToken, {
         httpOnly: true,
@@ -2201,19 +2234,21 @@ ${JSON.stringify(context || {})}`;
       res.json({
         success: true,
         token: newSessionToken,
-        user: verifiedUser || adminUser,
+        user: verifiedUser,
         recoveryCodes: result.recoveryCodes,
         message: 'MFA ativado com sucesso! Guarde seus códigos de recuperação em local seguro.'
       });
     } catch (err: any) {
+      console.error('[API MFA Confirm] Erro na ativação de MFA:', err.message);
       res.status(400).json({ error: err.message || 'Falha ao confirmar ativação do MFA.' });
     }
   });
 
-  // 3. Verificação de Perfil e Sessão Ativa
-  app.get('/api/admin/auth/me', requireAdmin, (req, res) => {
+  // 3. Verificação de Perfil e Sessão Ativa (Hotfix 11.6.1: Carrega perfil atualizado do banco)
+  app.get('/api/admin/auth/me', requireAdmin, async (req, res) => {
     const adminUser = (req as any).adminUser;
-    const permissions = adminAuthService.getPermissionsForRole(adminUser.role);
+    const freshUser = await adminAuthService.getAdminUserById(adminUser.id) || adminUser;
+    const permissions = adminAuthService.getPermissionsForRole(freshUser.role || adminUser.role);
 
     // Extrai o token existente da requisição ou gera um renovado
     const authHeader = req.headers['authorization'];
@@ -2233,7 +2268,7 @@ ${JSON.stringify(context || {})}`;
     res.json({
       success: true,
       token,
-      user: adminUser,
+      user: freshUser,
       permissions
     });
   });

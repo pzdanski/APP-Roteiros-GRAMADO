@@ -76,6 +76,7 @@ interface AdminDashboardProps {
   currentUser?: AdminUserRecord | null;
   adminSessionToken?: string | null;
   onLogout?: () => void;
+  onUserUpdated?: (user: AdminUserRecord) => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -83,10 +84,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   reports,
   onApproveReport,
   onRejectReport,
-  currentUser = null,
+  currentUser: initialUser = null,
   adminSessionToken: propSessionToken = null,
-  onLogout
+  onLogout,
+  onUserUpdated
 }) => {
+  const [currentUser, setCurrentUser] = useState<AdminUserRecord | null>(initialUser);
+
+  useEffect(() => {
+    setCurrentUser(initialUser);
+  }, [initialUser]);
   const [activeTab, setActiveTab] = useState<'apps' | 'apis' | 'webhooks' | 'metrics' | 'places' | 'events' | 'reports' | 'weights' | 'integrations' | 'trip_audit' | 'campaign' | 'users'>('apps');
   const [places, setPlaces] = useState<Place[]>(SEED_PLACES);
   const [events, setEvents] = useState<SerraEvent[]>(SEED_EVENTS);
@@ -636,6 +643,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
       if (data.token) {
         sessionStorage.setItem('duo21_admin_session', data.token);
+      }
+      if (data.user) {
+        setCurrentUser(data.user);
+        if (onUserUpdated) onUserUpdated(data.user);
       }
       setMfaRecoveryCodes(data.recoveryCodes || []);
       setMfaSetupStep('recovery');
