@@ -1469,6 +1469,12 @@ export class CatalogAcceleratorService {
     let importedSimulatedCount = 0;
     let errorsCount = 0;
 
+    // Persistência real somente com origem Google ao vivo (ou em DATA_MODE=mock, usado pelos testes)
+    const allowPersist = this.isLiveGoogleSource() || process.env.DATA_MODE === 'mock';
+    if (!allowPersist) {
+      console.warn('[Accelerator] Fonte não é Google ao vivo (fixtures/mock): nenhum local será gravado no catálogo.');
+    }
+
     const skuCalls: Record<string, number> = {
       'Places_TextSearch': 1,
       'Places_PlaceDetails_Basic': 0
@@ -1524,15 +1530,20 @@ export class CatalogAcceleratorService {
           this.duplicatesAvoidedTotal++;
         } else if (cand.reviewRequired || dupCheck.reviewRequired) {
           reviewCount++;
+        } else if (!allowPersist) {
+          // Fonte de teste/fixture: nunca gravar no catálogo real
+          reviewCount++;
         } else {
+          const saved = await this.persistCandidate(cand);
+          existingPlaces.push(saved);
           importedSimulatedCount++;
           addedPlacesSample.push({
-            id: `cand-${cand.google_place_id.slice(0, 8)}`,
+            id: saved?.id,
             name: cand.name,
             city: cand.city,
             category: cand.category || 'atrativo',
             google_place_id: cand.google_place_id,
-            rating: cand.rating || 4.5,
+            rating: cand.rating,
             address: cand.address
           });
         }
@@ -1576,6 +1587,11 @@ export class CatalogAcceleratorService {
 
       } catch (err: any) {
         errorsCount++;
+        console.warn(`[Accelerator] Falha ao processar "${cand.name}": ${String(err?.message || err).slice(0, 200)}`);
+        await supabaseServer.updateExecution(execRecord.execution_id, {
+          failed_items: errorsCount,
+          last_error: String(err?.message || err).slice(0, 300)
+        }).catch(() => null);
       }
     }
 
@@ -1659,6 +1675,44 @@ export class CatalogAcceleratorService {
     };
   }
 
+  /**
+   * Fonte única de gravação de um candidato aprovado na tabela places.
+   * Usada pelo microlote automático e por importApprovedBatch.
+   * ATENÇÃO: a idempotência por google_place_id vem de checkDuplicate (aplicação) e do índice único
+   * da migração 20261013_places_unique_google_place_id.sql; savePlace sozinho gera um UUID novo a cada chamada.
+   */
+  private async persistCandidate(cand: DiscoveredCandidate, placeIdOverride?: string): Promise<any> {
+    const placeId = placeIdOverride || cand.google_place_id || (cand as any).externalId;
+    return supabaseServer.savePlace({
+      name: cand.name,
+      city: cand.city,
+      category_id: (cand.category || 'atrativo').toUpperCase(),
+      address: cand.address,
+      latitude: cand.latitude,
+      longitude: cand.longitude,
+      google_place_id: placeId,
+      // Sem nota/contagem do Google, grava vazio: não inventar avaliação
+      rating: cand.rating ?? null,
+      rating_count: cand.userRatingCount ?? (cand as any).user_ratings_total ?? 0,
+      source_id: 'google_places_accelerator',
+      active: true,
+      is_demo: false,
+      audit_status: 'VERIFIED'
+    });
+  }
+
+  /**
+   * Candidatos só podem ser gravados quando vieram de uma consulta real ao Google
+   * (chave válida, Places habilitado no Cost Guard e chave que não seja de teste "mock-").
+   * Sem isso o provider devolve fixtures com IDs inventados, que não podem entrar no catálogo real.
+   */
+  private isLiveGoogleSource(): boolean {
+    const key = googlePlacesServer.getApiKey();
+    return googlePlacesServer.isConfigured()
+      && googlePlacesCostGuard.getConfig().enabled
+      && !key.startsWith('mock-');
+  }
+
   async importApprovedBatch(params: { city: 'Gramado' | 'Canela' | 'Nova Petrópolis'; candidates: DiscoveredCandidate[] }) {
     let importedCount = 0;
     let skippedDuplicatesCount = 0;
@@ -1682,21 +1736,7 @@ export class CatalogAcceleratorService {
       }
 
       try {
-        const saved = await supabaseServer.savePlace({
-          name: cand.name,
-          city: cand.city,
-          category_id: (cand.category || 'atrativo').toUpperCase(),
-          address: cand.address,
-          latitude: cand.latitude,
-          longitude: cand.longitude,
-          google_place_id: placeId,
-          rating: cand.rating || 4.5,
-          rating_count: cand.userRatingCount || (cand as any).user_ratings_total || 100,
-          source_id: 'google_places_accelerator',
-          active: true,
-          is_demo: false,
-          audit_status: 'VERIFIED'
-        });
+        const saved = await this.persistCandidate(cand, placeId);
         existingPlaces.push(saved);
         importedCount++;
       } catch {
