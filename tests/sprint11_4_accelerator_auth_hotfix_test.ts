@@ -74,6 +74,8 @@ describe('HOTFIX 11.4 — Autenticação do Catalog Accelerator e Resiliência d
   });
 
   test('2.1 Autenticação via Authorization Bearer token deve funcionar de forma idêntica a x-admin-session', async () => {
+    // Evita token idêntico ao revogado em teste anterior (iat em milissegundos iguais gera a mesma assinatura)
+    await new Promise(r => setTimeout(r, 5));
     const token = adminAuth.generateSessionToken();
 
     const req: any = {

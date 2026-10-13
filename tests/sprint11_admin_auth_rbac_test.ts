@@ -326,48 +326,79 @@ describe('SPRINT 11 — DUO CONTROL: Autenticação, Usuários e RBAC', () => {
   // =========================================================================
   // 6. VALIDAÇÕES CRÍTICAS DO RELEASE GATE
   // =========================================================================
-  it('6.1 Super Admin SEM MFA configurado deve ser bloqueado em operações sensíveis (requireSuperAdminSensitive)', async () => {
-    // Convida um Super Admin sem MFA ativo
-    const invitedAdmin = await adminAuthService.inviteAdminUser({
-      email: 'admin-nomfa@duo21.com.br',
-      fullName: 'Admin Sem MFA',
-      role: 'super_admin',
-      callerId: 'usr-admin-00000000-0001',
-      callerEmail: 'admin@duo21.com.br'
+  it('6.1 (MVP) Por padrão, Super Admin sem MFA acessa operações sensíveis; editor e viewer continuam bloqueados', async () => {
+    delete process.env.ADMIN_MFA_ENFORCED;
+    const invited = await adminAuthService.inviteAdminUser({
+      email: 'admin-mvp-nomfa@duo21.com.br', fullName: 'Admin MVP', role: 'super_admin',
+      callerId: 'usr-admin-00000000-0001', callerEmail: 'admin@duo21.com.br'
     });
-
-    const superAdminNoMfaToken = adminAuth.generateSessionToken({
-      id: invitedAdmin.id,
-      email: invitedAdmin.email,
-      role: 'super_admin',
-      mfa_verified: false
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      const req: any = {
-        headers: { 'x-admin-session': superAdminNoMfaToken },
-        body: {}
-      };
+    const run = (token: string | null) => new Promise<{ next: boolean; code?: number; body?: any }>((resolve) => {
+      const req: any = { headers: token ? { 'x-admin-session': token } : {}, body: {} };
       const res: any = {
-        status(code: number) {
-          try {
-            assert.strictEqual(code, 403, 'Deve retornar 403 Forbidden para operação sensível sem MFA');
-            return {
-              json(body: any) {
-                assert.strictEqual(body.code, 'MFA_REQUIRED');
-                assert.match(body.error, /MFA\/TOTP/i);
-                resolve();
-              }
-            };
-          } catch (err) {
-            reject(err);
-          }
-        }
+        status(code: number) { return { json(body: any) { resolve({ next: false, code, body }); } }; },
+        json(body: any) { resolve({ next: false, code: 200, body }); }
       };
-      const next = () => reject(new Error('Operação sensível não pode prosseguir sem MFA configurado'));
-
-      adminAuth.requireSuperAdminSensitive(req, res, next);
+      adminAuth.requireSuperAdminSensitive(req, res, () => resolve({ next: true }));
     });
+    const superTok = adminAuth.generateSessionToken({ id: invited.id, email: invited.email, role: 'super_admin', mfa_verified: false });
+    assert.strictEqual((await run(superTok)).next, true, 'super_admin autenticado deve passar sem MFA no MVP');
+    const editor = await adminAuthService.getAdminUserByEmail('editor@duo21.com.br');
+    const viewer = await adminAuthService.getAdminUserByEmail('viewer@duo21.com.br');
+    const edRes = await run(adminAuth.generateSessionToken(editor as any));
+    assert.strictEqual(edRes.next, false); assert.strictEqual(edRes.code, 403);
+    const viRes = await run(adminAuth.generateSessionToken(viewer as any));
+    assert.strictEqual(viRes.next, false); assert.strictEqual(viRes.code, 403);
+    const anon = await run(null);
+    assert.strictEqual(anon.next, false); assert.strictEqual(anon.code, 401);
+  });
+
+  it('6.1b Com ADMIN_MFA_ENFORCED=true, Super Admin SEM MFA configurado é bloqueado em operações sensíveis', async () => {
+    process.env.ADMIN_MFA_ENFORCED = 'true';
+    try {
+      // Convida um Super Admin sem MFA ativo
+      const invitedAdmin = await adminAuthService.inviteAdminUser({
+        email: 'admin-nomfa@duo21.com.br',
+        fullName: 'Admin Sem MFA',
+        role: 'super_admin',
+        callerId: 'usr-admin-00000000-0001',
+        callerEmail: 'admin@duo21.com.br'
+      });
+
+      const superAdminNoMfaToken = adminAuth.generateSessionToken({
+        id: invitedAdmin.id,
+        email: invitedAdmin.email,
+        role: 'super_admin',
+        mfa_verified: false
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        const req: any = {
+          headers: { 'x-admin-session': superAdminNoMfaToken },
+          body: {}
+        };
+        const res: any = {
+          status(code: number) {
+            try {
+              assert.strictEqual(code, 403, 'Deve retornar 403 Forbidden para operação sensível sem MFA');
+              return {
+                json(body: any) {
+                  assert.strictEqual(body.code, 'MFA_REQUIRED');
+                  assert.match(body.error, /MFA\/TOTP/i);
+                  resolve();
+                }
+              };
+            } catch (err) {
+              reject(err);
+            }
+          }
+        };
+        const next = () => reject(new Error('Operação sensível não pode prosseguir sem MFA configurado'));
+
+        adminAuth.requireSuperAdminSensitive(req, res, next);
+      });
+    } finally {
+      delete process.env.ADMIN_MFA_ENFORCED;
+    }
   });
 
   it('6.2 Falsificação de assinatura HMAC deve ser sumariamente rejeitada pelo backend', () => {

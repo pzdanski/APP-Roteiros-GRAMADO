@@ -214,7 +214,11 @@ export function createAdminAuthMiddleware(adminApiKey: string): AdminAuthManager
   async function requireSuperAdminSensitive(req: Request, res: Response, next: NextFunction): Promise<void> {
     await requireRole(['super_admin'])(req, res, async () => {
       const user = (req as any).adminUser;
-      if (user && user.authMethod !== 'api_key' && user.id !== 'master-session') {
+      // MVP (decisao de produto autorizada): MFA adiado. O papel super_admin continua obrigatorio
+      // (requireRole acima) e a sessao autenticada continua exigida. Para reativar a exigencia de MFA
+      // nas operacoes sensiveis, defina ADMIN_MFA_ENFORCED=true. Dados de MFA permanecem no banco.
+      const mfaEnforced = process.env.ADMIN_MFA_ENFORCED === 'true';
+      if (mfaEnforced && user && user.authMethod !== 'api_key' && user.id !== 'master-session') {
         const userRec = await adminAuthService.getAdminUserById(user.id);
         // Regra Estrita: Operações sensíveis exigem que o Super Admin possua MFA ativo
         if (!userRec?.mfa_enabled) {

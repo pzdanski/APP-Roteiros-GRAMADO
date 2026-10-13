@@ -5,6 +5,9 @@ import { adminAuthService } from '../src/server/security/AdminAuthService';
 import { createAdminAuthMiddleware } from '../src/server/adminAuth';
 import { Request, Response } from 'express';
 
+// Esta suíte valida o comportamento COM exigência de MFA (reativável por flag).
+process.env.ADMIN_MFA_ENFORCED = 'true';
+
 test('HOTFIX 11.6 — Configuração Inicial de MFA e Resiliência de Sessão', async (t) => {
   const adminApiKey = 'test-duo21-secret-key-11-6';
   const requireAdmin = createAdminAuthMiddleware(adminApiKey);

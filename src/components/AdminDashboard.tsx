@@ -2514,7 +2514,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <p className="text-xs text-slate-600">
                   {currentUser?.mfa_enabled
                     ? 'Sua conta está protegida por verificação em duas etapas via aplicativo autenticador (Google Authenticator, 1Password, etc.).'
-                    : 'A ativação do segundo fator de autenticação (TOTP) é obrigatória para executar operações sensíveis, autorizar fases do Catalog Accelerator e ajustar o Cost Guard.'}
+                    : 'Durante o MVP, a verificação em duas etapas é opcional: login por senha, papéis e proteção das APIs continuam ativos. Recomendamos ativá-la quando estiver disponível.'}
                 </p>
               </div>
               <div className="shrink-0">

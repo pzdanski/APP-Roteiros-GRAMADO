@@ -68,3 +68,9 @@
 - **Auto-Desativação Bloqueada:** Nenhum usuário pode desativar seu próprio acesso.
 - **Revogação Instantânea de Sessões:** Ao desativar ou revogar sessões de um administrador, qualquer token ativo é imediatamente invalidado (`isSessionRevoked`).
 - **Auditoria Imutável:** Todas as operações administrativas relevantes são registradas em `public.admin_audit_logs`.
+
+## MFA adiado no MVP (Sprint 12)
+
+Decisão de produto: durante o MVP, operações sensíveis do DUO Control (autorizar fases do Catalog Accelerator, executar microlotes, Cost Guard) exigem **sessão autenticada com papel `super_admin`**, sem segundo fator. Login por senha, sessões, RBAC (`editor`/`viewer` recebem 403, anônimo recebe 401) e auditoria continuam ativos.
+
+Para reativar a exigência de MFA/TOTP nessas operações, defina `ADMIN_MFA_ENFORCED=true` no Cloud Run. Dados e rotas de configuração de MFA permanecem no código e no banco. Esta é uma redução temporária de segurança: reavaliar antes de operar com mais de um Super Admin ou dados sensíveis de clientes no painel.
