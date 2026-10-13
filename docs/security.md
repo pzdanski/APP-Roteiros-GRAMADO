@@ -37,3 +37,34 @@
 
 - Arquivos `.env`, `.env.local`, `.data/`, credenciais e logs estão listados no `.gitignore`.
 - Auditoria contínua de padrões de chave privada.
+
+## 6. DUO Control — Governança, Supabase Auth e RBAC (Sprint 11)
+
+### 6.1 Rota Administrativa Oficial `/duo-control`
+- `/duo-control` é a rota exclusiva do painel de controle.
+- Visitantes desautenticados visualizam **estritamente** a tela de login; nenhum painel, métrica ou dado interno é renderizado ou pré-carregado.
+- Navegação bidirecional com a aplicação pública via HTML5 History (`pushState` e `popstate`).
+- Rota pública `/` não possui atalhos ou backdoors para renderização in-line do painel administrativo.
+
+### 6.2 Segregação entre Turistas e Administradores
+- **Turistas:** Identificados via tokens criptográficos aleatórios de viagem (`v_<hex_24_bytes>`). Nunca utilizam contas de usuário do Supabase Auth.
+- **Administradores:** Identificados no Supabase Auth (`auth.users`) e vinculados individualmente à tabela `public.admin_users`.
+- Sessões administrativas trafegam via cookies seguros `HttpOnly`, `SameSite=Lax` (`duo_admin_token`) ou cabeçalho `Authorization: Bearer <token>`, validados com assinatura HMAC pelo backend.
+
+### 6.3 Matriz de Perfis (RBAC)
+1. **SUPER ADMIN:**
+   - Acesso irrestrito a todas as operações: gestão de administradores, autorização e revogação de fases do Catalog Accelerator, ajuste de limites e custos no Cost Guard, curadoria e exclusão de catálogo, consulta de logs de auditoria imutáveis.
+   - Suporte a MFA/TOTP obrigatório para operações críticas e sensíveis.
+2. **EDITOR:**
+   - Curadoria e gestão editorial: cadastro e edição de estabelecimentos, upload e ordenação de mídias/fotos, atualização de parâmetros editoriais de campanha.
+   - **Proibições Estritas:** Não pode gerenciar usuários, não pode autorizar fases do Catalog Accelerator, não pode executar importações automáticas do Google Places e não pode alterar parâmetros de custo/Cost Guard.
+3. **VISUALIZADOR:**
+   - Acesso estritamente somente leitura: consulta de catálogos, relatórios analíticos e indicadores operacionais autorizados.
+   - **Proibições Estritas:** Não pode executar qualquer mutação, importação ou alteração administrativa.
+
+### 6.4 Regras de Integridade e Proteção de Privilégios
+- **Anti-Autoelevação:** Um administrador não pode alterar sua própria função administrativa.
+- **Proteção do Último Super Admin:** É terminantemente proibido rebaixar, desativar ou excluir o último Super Admin ativo do sistema.
+- **Auto-Desativação Bloqueada:** Nenhum usuário pode desativar seu próprio acesso.
+- **Revogação Instantânea de Sessões:** Ao desativar ou revogar sessões de um administrador, qualquer token ativo é imediatamente invalidado (`isSessionRevoked`).
+- **Auditoria Imutável:** Todas as operações administrativas relevantes são registradas em `public.admin_audit_logs`.

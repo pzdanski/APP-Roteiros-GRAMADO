@@ -1167,7 +1167,13 @@ export class CatalogAcceleratorService {
     // 3. Validação de autorização ativa da fase
     const currentAuth = await supabaseServer.getPhaseAuthorization(targetPhase);
     if (!currentAuth || currentAuth.status !== 'AUTORIZADA' || currentAuth.revoked_at) {
-      throw new Error(`A Fase ${targetPhase} requer autorização administrativa explícita no /duo-control antes de iniciar chamadas.`);
+      return {
+        success: false,
+        reason: 'PHASE_UNAUTHORIZED',
+        microlotNumber: params.microlotNumber || (this.microlotsExecuted + 1),
+        placesAddedCount: 0,
+        message: `A Fase ${targetPhase} requer autorização administrativa explícita no /duo-control antes de iniciar chamadas.`
+      };
     }
 
     // 4. Cost Guard
@@ -1291,16 +1297,21 @@ export class CatalogAcceleratorService {
         const active = await supabaseServer.getActiveExecution(ph);
         if (active && (active.status === 'RUNNING' || active.status === 'PAUSE_REQUESTED' || active.status === 'QUEUED')) {
           const lease = await supabaseServer.getPhaseLease(active.phase_id).catch(() => null);
-          const isLeaseExpired = !lease || new Date(lease.lease_expires_at).getTime() < Date.now();
+          const leaseExpired = !lease || new Date(lease.lease_expires_at).getTime() < Date.now();
+          const executionStale = !active.updated_at || (Date.now() - new Date(active.updated_at).getTime() > 60000);
 
-          if (isLeaseExpired) {
+          // Só reconcilia se o lease expirou E (passou mais de 60s sem update ou está em QUEUED)
+          if (leaseExpired && (executionStale || active.status === 'QUEUED')) {
             await supabaseServer.updateExecution(active.execution_id, {
               status: 'PAUSED',
-              current_step: `RECUPERADO APÓS REINÍCIO DO CLOUD RUN: Lease expirado em ${lease?.lease_expires_at || 'desconhecido'}. Pronto para retomada segura.`,
+              current_step: `RECUPERADO_OPERADOR: Execução abandonada (lease expirado em ${lease?.lease_expires_at || 'sem lease'}). Reconciliada para PAUSED preservando checkpoints.`,
               updated_at: new Date().toISOString()
             });
+            await supabaseServer.releasePhaseLease(active.phase_id).catch(() => null);
             recoveredCount++;
-            details.push(`Execução ${active.execution_id} (Fase ${active.phase_id}, Microlote ${active.microlot_number}) reconciliada como PAUSED com checkpoints preservados.`);
+            details.push(`Execução ${active.execution_id} (Fase ${active.phase_id}, Microlote ${active.microlot_number}) comprovadamente abandonada: reconciliada como PAUSED com locks liberados.`);
+          } else {
+            details.push(`Fase ${ph} possui execução ativa com lease vigente até ${lease?.lease_expires_at || 'ativo'} - mantida sem alteração.`);
           }
         }
       }

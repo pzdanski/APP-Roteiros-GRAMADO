@@ -805,3 +805,57 @@ export interface AcceleratorPhaseLockRecord {
   acquired_at: string;
   updated_at: string;
 }
+
+// ==============================================================================
+// Sprint 11 — DUO Control: Autenticação, Usuários, Permissões (RBAC) e Auditoria
+// ==============================================================================
+export type AdminRole = 'super_admin' | 'editor' | 'viewer';
+
+export interface AdminUserRecord {
+  id: string;
+  email: string;
+  full_name: string;
+  role: AdminRole;
+  is_active: boolean;
+  mfa_enabled: boolean;
+  mfa_secret?: string | null;
+  mfa_recovery_codes?: string[] | null;
+  sessions_revoked_at?: string | null;
+  last_sign_in_at: string | null;
+  invited_by?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminAuditLogRecord {
+  id: string;
+  admin_user_id?: string | null;
+  admin_email: string;
+  action: string;
+  target_resource?: string | null;
+  details: Record<string, any>;
+  ip_address?: string | null;
+  status: string;
+  created_at: string;
+}
+
+export interface AdminSessionProfile {
+  id: string;
+  email: string;
+  full_name: string;
+  role: AdminRole;
+  is_active: boolean;
+  mfa_enabled: boolean;
+  authMethod: 'supabase_auth' | 'session_token' | 'api_key' | 'mock';
+  permissions: {
+    canManageUsers: boolean;
+    canExecuteAccelerator: boolean;
+    canAuthorizePhases: boolean;
+    canManageCostGuard: boolean;
+    canEditPlaces: boolean;
+    canDeletePlaces: boolean;
+    canViewMetrics: boolean;
+    canManageCampaigns: boolean;
+    canViewAuditLogs: boolean;
+  };
+}

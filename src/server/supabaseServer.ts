@@ -318,6 +318,10 @@ export const supabaseServer = {
     return env.DATA_MODE;
   },
 
+  getRawClient(): SupabaseClient | null {
+    return serverClient;
+  },
+
   isConfigured(): boolean {
     return env.DATA_MODE === 'supabase' && Boolean(serverClient);
   },

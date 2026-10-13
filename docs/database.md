@@ -35,19 +35,53 @@ API EXTERNA (Google Places / Routes - sob demanda com CostGuard)
 
 ## 4. Migrações Versionadas (`supabase/migrations/`)
 
-1. `20260925000001_create_core_schema.sql`:
-   - Tabelas estruturais: `places`, `place_categories`, `place_tags`, `place_tag_relations`, `place_hours`, `price_observations`, `data_sources`, `events`, `trips`, `trip_profiles`, `trip_days`, `trip_activities`, `trip_previews`, `payments`, `api_usage`, `external_data_cache`, `user_reports`.
-2. `20260925000002_enable_rls_policies.sql`:
-   - Row Level Security (RLS) em 100% das tabelas.
-   - Catálogo com leitura pública para ativos.
-   - Viagens protegidas por `secure_token`.
-3. `20260925000003_seed_catalog_and_sources.sql`:
-   - Carga inicial curada para Gramado, Canela e Nova Petrópolis (27 locais, horários, preços por temporada).
-4. `20260925000004_hardening_indexes_and_rpc.sql`:
-   - Índices de performance para cidades, categorias, tags, horários, tokens e cache.
-   - RPC Postgres `get_candidate_places(...)` para pré-filtragem estruturada sem IA.
+1. `20260925000001_create_core_schema.sql` (Schema Principal)
+2. `20260925000002_enable_rls_policies.sql` (RLS Inicial)
+3. `20260925000003_seed_catalog_and_sources.sql` (Seed Inicial Curado)
+4. `20260925000004_hardening_indexes_and_rpc.sql` (Índices & RPCs)
+5. `20260925000005_create_payment_orders.sql` (Pedidos de Pagamento)
+6. `20261002_sprint10a_smart_catalog.sql` (Catálogo Inteligente)
+7. `20261002000001_add_campaign_fields.sql` (Campos de Campanha 300)
+8. `20261003_hotfix10a2_media_content.sql` (Mídias e Fotos do Local)
+9. `20261003_sprint10b_places_costguard.sql` (Cost Guard & Auditoria)
+10. `20261004_sprint10c_controlled_enrichment.sql` (Enriquecimento Controlado)
 
-## 5. Rastreabilidade
+### 4.1 Migrações P0 e Sprint 11 (Ordem Obrigatória de Execução)
+11. `20261008_hotfix_p0_sanitize_catalog.sql` (P0 Etapa 1: Sanitização do Catálogo, proteção de curadoria)
+12. `20261008_hotfix_p0_etapa2_authorizations.sql` (P0 Etapa 2: Autorizações explícitas de fases 1, 2 e 3)
+13. `20261008_hotfix_p0_etapa3_execution_progress.sql` (P0 Etapa 3: Rastreamento durável de microlotes e checkpoints)
+14. `20261009_sprint11_admin_users_and_roles.sql` (Sprint 11: Governança, RBAC, auditoria e `admin_users`)
+
+---
+
+## 5. Procedimento de Bootstrap do Primeiro Super Admin (Seguro e Controlado)
+
+**Importante:** Nunca criar usuários administrativos com senha fixa ou hardcoded no código fonte. O procedimento é executado com controle estrito via Supabase:
+
+1. **Passo 1 (Criação da Conta no Supabase Auth):**
+   - Acesse o Dashboard do projeto no Supabase: `Authentication` → `Users` → `Add User` → `Create User`.
+   - Informe o email institucional (ex: `admin@duo21.com.br`) e defina uma senha forte ou envie o link de convite por email.
+   - O Supabase gerará um UUID único para o usuário em `auth.users(id)`.
+
+2. **Passo 2 (Vinculação e Promoção a Super Admin no SQL Editor):**
+   - Acesse o Supabase `SQL Editor`.
+   - Execute a função de governança idempotente criada na migração `20261009_sprint11_admin_users_and_roles.sql`:
+   ```sql
+   SELECT public.bootstrap_initial_super_admin(
+     'admin@duo21.com.br',
+     'Nome do Administrador'
+   );
+   ```
+   - A função valida a existência do usuário em `auth.users`, insere na tabela `public.admin_users` com a função `super_admin`, define `is_active = true` e registra o evento imutável em `public.admin_audit_logs`.
+
+3. **Passo 3 (Primeiro Acesso ao DUO Control):**
+   - Acesse a rota oficial: `https://roteiro.duo21.com.br/duo-control`
+   - Realize o login com o email e a senha cadastrados.
+   - O painel carregará o perfil com selo `Super Admin` e liberará a gestão de usuários em `Configurações → Usuários e Permissões`.
+
+---
+
+## 6. Rastreabilidade
 Todo dado no catálogo informa:
 - `source_id`: Identificador da fonte (`duo21_curatorship`, `official_gramado`, etc.).
 - `checked_at`: Data da última auditoria.
